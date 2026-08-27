@@ -1,0 +1,44 @@
+name: Gunga Job Radar
+
+on:
+  schedule:
+    # Scan every 3 hours, around the clock — this is what powers instant Telegram alerts
+    - cron: "0 */3 * * *"
+    # Once daily at 03:00 UTC (06:00 EAT) — sends the Gmail digest of everything found since
+    # the last digest
+    - cron: "0 3 * * *"
+  workflow_dispatch: {}   # lets you trigger a run manually from the Actions tab, for testing
+
+jobs:
+  scan:
+    # Runs on every schedule trigger. We work out below whether this particular trigger
+    # was the "3am UTC" one (digest time) or one of the other 3-hourly ticks (scan only).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Decide mode (digest at 03:00 UTC, scan otherwise)
+        id: mode
+        run: |
+          HOUR=$(date -u +%H)
+          if [ "$HOUR" = "03" ]; then
+            echo "value=both" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=scan" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run Job Radar
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python job_radar.py --mode ${{ steps.mode.outputs.value }}
