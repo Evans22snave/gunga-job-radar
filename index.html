@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gunga Job Radar</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #ECE3CC;
+    --paper-deep: #E2D6B4;
+    --line: #C7B688;
+    --ink: #223244;
+    --ink-soft: #56637a;
+    --signal: #B54834;
+    --strong: #2F6E5C;
+    --consider: #B8862F;
+    --poor: #A6493C;
+    --radius: 3px;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    background-image:
+      linear-gradient(var(--line) 1px, transparent 1px),
+      linear-gradient(90deg, var(--line) 1px, transparent 1px);
+    background-size: 28px 28px;
+    background-attachment: fixed;
+    background-position: -1px -1px;
+    color: var(--ink);
+    font-family: 'IBM Plex Sans', sans-serif;
+    min-height: 100vh;
+  }
+
+  .wrap { max-width: 760px; margin: 0 auto; padding: 20px 16px 60px; }
+
+  header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    padding-bottom: 18px;
+    border-bottom: 2px solid var(--ink);
+    margin-bottom: 22px;
+    flex-wrap: wrap;
+  }
+
+  .brand { display: flex; align-items: center; gap: 12px; }
+
+  .compass {
+    width: 34px; height: 34px; flex-shrink: 0;
+  }
+
+  h1 {
+    font-family: 'Fraunces', serif;
+    font-weight: 700;
+    font-size: 1.5rem;
+    letter-spacing: 0.01em;
+    margin: 0;
+  }
+
+  .subtitle {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.72rem;
+    color: var(--ink-soft);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-top: 2px;
+  }
+
+  #sync-status {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.72rem;
+    color: var(--ink-soft);
+    text-align: right;
+  }
+
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+    margin-bottom: 20px;
+  }
+
+  .stat-card {
+    background: var(--paper-deep);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 10px 12px;
+    cursor: pointer;
+    text-align: left;
+    font: inherit;
+    color: inherit;
+  }
+
+  .stat-card.active { border-color: var(--ink); box-shadow: inset 0 0 0 1px var(--ink); }
+
+  .stat-label {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.62rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--ink-soft);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 4px;
+  }
+
+  .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+  .dot.strong { background: var(--strong); }
+  .dot.consider { background: var(--consider); }
+  .dot.poor { background: var(--poor); }
+
+  .stat-count {
+    font-family: 'Fraunces', serif;
+    font-weight: 600;
+    font-size: 1.6rem;
+  }
+
+  .clear-filter {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.72rem;
+    background: none;
+    border: none;
+    color: var(--ink-soft);
+    text-decoration: underline;
+    cursor: pointer;
+    padding: 0 0 14px;
+  }
+
+  .job {
+    background: var(--paper-deep);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--ink-soft);
+    border-radius: var(--radius);
+    margin-bottom: 10px;
+    overflow: hidden;
+  }
+
+  .job.strong { border-left-color: var(--strong); }
+  .job.consider { border-left-color: var(--consider); }
+  .job.poor { border-left-color: var(--poor); }
+
+  .job-head {
+    width: 100%;
+    background: none;
+    border: none;
+    text-align: left;
+    padding: 12px 14px;
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    cursor: pointer;
+    font: inherit;
+    color: inherit;
+  }
+
+  .bearing {
+    flex-shrink: 0;
+    width: 46px; height: 46px;
+    border-radius: 50%;
+    border: 2px solid var(--ink);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    font-family: 'IBM Plex Mono', monospace;
+    background: var(--paper);
+  }
+  .bearing .num { font-size: 0.85rem; font-weight: 500; line-height: 1; }
+  .bearing .pct { font-size: 0.5rem; color: var(--ink-soft); }
+
+  .job.strong .bearing { border-color: var(--strong); }
+  .job.consider .bearing { border-color: var(--consider); }
+  .job.poor .bearing { border-color: var(--poor); }
+
+  .job-main { flex: 1; min-width: 0; }
+
+  .job-title {
+    font-family: 'Fraunces', serif;
+    font-weight: 600;
+    font-size: 1.02rem;
+    margin: 0 0 2px;
+  }
+
+  .job-company { color: var(--ink-soft); font-size: 0.88rem; margin: 0 0 6px; }
+
+  .job-meta {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.68rem;
+    color: var(--ink-soft);
+    display: flex; gap: 12px; flex-wrap: wrap;
+  }
+
+  .job-body {
+    padding: 0 14px 14px 72px;
+    display: none;
+  }
+  .job-body.open { display: block; }
+
+  .reasons { font-size: 0.82rem; margin: 0 0 10px; line-height: 1.5; }
+  .reasons.good { color: var(--strong); }
+  .reasons.bad { color: var(--poor); }
+
+  .apply-btn {
+    display: inline-block;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    background: var(--ink);
+    color: var(--paper);
+    text-decoration: none;
+    padding: 7px 12px;
+    border-radius: var(--radius);
+  }
+
+  #state {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.85rem;
+    color: var(--ink-soft);
+    padding: 30px 0;
+    text-align: center;
+  }
+
+  #state.error { color: var(--signal); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="brand">
+      <svg class="compass" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="20" cy="20" r="18" stroke="#223244" stroke-width="1.5"/>
+        <circle cx="20" cy="20" r="1.6" fill="#223244"/>
+        <path d="M20 4 L23 20 L20 36 L17 20 Z" fill="#B54834"/>
+        <path d="M4 20 L20 18 L36 20 L20 22 Z" fill="#223244" opacity="0.55"/>
+      </svg>
+      <div>
+        <h1>Gunga Job Radar</h1>
+        <div class="subtitle">Live feed &middot; MyJobMag Kenya</div>
+      </div>
+    </div>
+    <div id="sync-status">connecting&hellip;</div>
+  </header>
+
+  <div id="state">Charting incoming signals&hellip;</div>
+
+  <div id="app" style="display:none;">
+    <div class="stats" id="stats"></div>
+    <button class="clear-filter" id="clear-filter" style="display:none;">&larr; show all bearings</button>
+    <div id="job-list"></div>
+  </div>
+
+</div>
+
+<script>
+const SUPABASE_URL = "https://vaymtujfjneynnsckeng.supabase.co";
+const SUPABASE_KEY = "sb_publishable_bpPZMn96gOXFnZToUZz5Tg_MJtemo7B";
+
+const TIER_LABEL = { strong: "Strong bearing", consider: "Worth considering", poor: "Weak signal" };
+
+let allJobs = [];
+let activeFilter = "all";
+
+async function loadJobs() {
+  const stateEl = document.getElementById("state");
+  const syncEl = document.getElementById("sync-status");
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/jobs?select=*&order=score.desc&limit=300`,
+      { headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` } }
+    );
+    if (!res.ok) throw new Error(`Server responded ${res.status}`);
+    allJobs = await res.json();
+
+    if (allJobs.length === 0) {
+      stateEl.textContent = "No signals charted yet — the scanner runs every 3 hours. Check back soon.";
+      syncEl.textContent = "0 jobs on record";
+      return;
+    }
+
+    stateEl.style.display = "none";
+    document.getElementById("app").style.display = "block";
+    syncEl.textContent = `${allJobs.length} job${allJobs.length === 1 ? "" : "s"} on record`;
+    renderStats();
+    renderJobs();
+  } catch (err) {
+    stateEl.textContent = "Couldn't reach the chart room — " + err.message;
+    stateEl.classList.add("error");
+    syncEl.textContent = "connection failed";
+  }
+}
+
+function renderStats() {
+  const counts = { strong: 0, consider: 0, poor: 0 };
+  allJobs.forEach(j => { if (counts[j.tier] !== undefined) counts[j.tier]++; });
+
+  const statsEl = document.getElementById("stats");
+  statsEl.innerHTML = "";
+  ["strong", "consider", "poor"].forEach(tier => {
+    const card = document.createElement("button");
+    card.className = "stat-card" + (activeFilter === tier ? " active" : "");
+    card.innerHTML = `
+      <div class="stat-label"><span class="dot ${tier}"></span>${TIER_LABEL[tier]}</div>
+      <div class="stat-count">${counts[tier]}</div>
+    `;
+    card.onclick = () => {
+      activeFilter = activeFilter === tier ? "all" : tier;
+      renderStats();
+      renderJobs();
+    };
+    statsEl.appendChild(card);
+  });
+
+  document.getElementById("clear-filter").style.display = activeFilter === "all" ? "none" : "inline-block";
+}
+
+document.getElementById("clear-filter").onclick = () => {
+  activeFilter = "all";
+  renderStats();
+  renderJobs();
+};
+
+function renderJobs() {
+  const listEl = document.getElementById("job-list");
+  const visible = activeFilter === "all" ? allJobs : allJobs.filter(j => j.tier === activeFilter);
+  listEl.innerHTML = "";
+
+  if (visible.length === 0) {
+    listEl.innerHTML = `<div id="state" style="display:block;">Nothing charted in this bearing.</div>`;
+    return;
+  }
+
+  visible.forEach(job => {
+    const reasons = (job.reasons || "").split("; ").filter(Boolean);
+    const blockers = (job.blockers || "").split("; ").filter(Boolean);
+    const posted = job.fetched_at ? new Date(job.fetched_at).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "";
+
+    const card = document.createElement("div");
+    card.className = `job ${job.tier}`;
+    card.innerHTML = `
+      <button class="job-head" data-id="${job.id}">
+        <div class="bearing">
+          <div class="num">${job.score}</div>
+          <div class="pct">MATCH</div>
+        </div>
+        <div class="job-main">
+          <p class="job-title">${escapeHtml(job.title)}</p>
+          <p class="job-company">${escapeHtml(job.company || "Unknown")}</p>
+          <div class="job-meta">
+            <span>${escapeHtml(job.location || "")}</span>
+            <span>${escapeHtml(job.source || "")}</span>
+            <span>logged ${posted}</span>
+          </div>
+        </div>
+      </button>
+      <div class="job-body" id="body-${job.id}">
+        ${reasons.length ? `<p class="reasons good">&#10003; ${reasons.map(escapeHtml).join(" &middot; ")}</p>` : ""}
+        ${blockers.length ? `<p class="reasons bad">&#9679; ${blockers.map(escapeHtml).join(" &middot; ")}</p>` : ""}
+        <a class="apply-btn" href="${job.source_url}" target="_blank" rel="noopener">View &amp; apply &rarr;</a>
+      </div>
+    `;
+    listEl.appendChild(card);
+
+    card.querySelector(".job-head").onclick = () => {
+      document.getElementById(`body-${job.id}`).classList.toggle("open");
+    };
+  });
+}
+
+function escapeHtml(str) {
+  const div = document.createElement("div");
+  div.textContent = str ?? "";
+  return div.innerHTML;
+}
+
+loadJobs();
+setInterval(loadJobs, 5 * 60 * 1000); // refresh every 5 minutes while the page is open
+</script>
+</body>
+</html>
