@@ -2,7 +2,7 @@
 Gunga Job Radar — Phase 1 starter script
 
 What this does, end to end:
-1. Fetches recent ICT-relevant job postings from the ReliefWeb API (no key needed).
+1. Fetches recent Kenyan job postings from MyJobMag's public RSS feed (no key needed).
 2. Scores each job against Evans's candidate profile (rule-based, Section 7 of the spec).
 3. Stores jobs + scores in Supabase Postgres, skipping ones already seen (dedupe).
 4. Sends an instant Telegram alert for any NEW strong match (score >= 75).
@@ -23,10 +23,12 @@ or set them as GitHub Actions secrets later):
 """
 
 import os
+import re
 import argparse
 import smtplib
 import requests
 import psycopg2
+import xml.etree.ElementTree as ET
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from dotenv import load_dotenv
@@ -68,35 +70,41 @@ PROFILE = {
 }
 
 # ---------------------------------------------------------------------------
-# 2. Collector — ReliefWeb API (public, no key required)
+# 2. Collector — MyJobMag Kenya RSS feed (public, no key required)
 # ---------------------------------------------------------------------------
 
-def fetch_reliefweb_jobs(query="ICT OR IT OR Information Technology", country="Kenya", limit=20):
-    """Fetch recent job postings from ReliefWeb's public API."""
-    url = "https://api.reliefweb.int/v1/jobs"
-    params = {
-        "appname": "gunga-job-radar",
-        "query[value]": query,
-        "filter[field]": "country",
-        "filter[value]": country,
-        "limit": limit,
-        "sort[]": "date.created:desc",
-        "fields[include][]": ["title", "body", "url", "date", "source", "country"],
-    }
-    resp = requests.get(url, params=params, timeout=20)
-    resp.raise_for_status()
-    data = resp.json()
+MYJOBMAG_FEED_URL = "https://www.myjobmag.co.ke/feeds/jobsxml.xml"
 
+def fetch_myjobmag_jobs(limit=100):
+    """Fetch and parse MyJobMag Kenya's public RSS feed. Returns ALL jobs in the
+    feed (limited to `limit`) — filtering to ICT-relevant ones happens in run_scan,
+    since the scorer already does that work and we don't want to filter twice."""
+    resp = requests.get(MYJOBMAG_FEED_URL, timeout=20, headers={
+        "User-Agent": "GungaJobRadar/1.0 (personal job alert tool; contact: snavevanso@gmail.com)"
+    })
+    resp.raise_for_status()
+
+    root = ET.fromstring(resp.content)
     jobs = []
-    for item in data.get("data", []):
-        fields = item.get("fields", {})
+    for item in root.findall(".//item")[:limit]:
+        title = (item.findtext("title") or "Untitled").strip()
+        link = (item.findtext("link") or "").strip()
+        industry = (item.findtext("industry") or "").strip()
+        description = (item.findtext("description") or "").strip()
+
+        # Titles are usually "Role at Company" — split that out for a cleaner company field
+        company = "Unknown"
+        match = re.search(r"\bat\s+(.+)$", title, re.IGNORECASE)
+        if match:
+            company = match.group(1).strip()
+
         jobs.append({
-            "source": "ReliefWeb",
-            "source_url": fields.get("url", ""),
-            "title": fields.get("title", "Untitled"),
-            "company": (fields.get("source") or [{}])[0].get("name", "Unknown"),
-            "location": country,
-            "description": fields.get("body", "") or "",
+            "source": "MyJobMag",
+            "source_url": link,
+            "title": title,
+            "company": company,
+            "location": "Kenya",
+            "description": f"[{industry}] {description}" if industry else description,
         })
     return jobs
 
@@ -284,8 +292,8 @@ def send_gmail_digest(scored_jobs):
 def run_scan(conn):
     """Fetch, score, save, and fire instant Telegram alerts for strong matches.
     Meant to run frequently (e.g. every 2-3 hours)."""
-    raw_jobs = fetch_reliefweb_jobs()
-    print(f"Fetched {len(raw_jobs)} jobs from ReliefWeb")
+    raw_jobs = fetch_myjobmag_jobs()
+    print(f"Fetched {len(raw_jobs)} jobs from MyJobMag")
 
     new_count = 0
     for job in raw_jobs:
@@ -295,6 +303,13 @@ def run_scan(conn):
             continue  # already seen, skip
 
         score, tier, reasons, blockers = score_job(job)
+
+        # MyJobMag is a general Kenyan job board, not ICT-specific, so most postings
+        # will score very low. Skip saving/noise for anything clearly irrelevant —
+        # keep the DB and digest focused on jobs actually worth Evans's attention.
+        if score < 20:
+            continue
+
         save_job(conn, job, score, tier, reasons, blockers)
         new_count += 1
 
