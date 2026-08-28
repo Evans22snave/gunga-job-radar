@@ -1,6 +1,6 @@
 """
 Gunga Job Radar
-Phase 3 — End-to-End Job Monitoring System
+Phase 4 — Kenya-aware job matching
 
 Pipeline:
 
@@ -8,9 +8,11 @@ Pipeline:
           ↓
        Collector
           ↓
-    Matching Engine
+    Location Classification
           ↓
-       Database
+      Match Scoring
+          ↓
+       PostgreSQL
           ↓
     ┌─────┴─────┐
     ↓           ↓
@@ -54,7 +56,6 @@ from database.db import Database, DatabaseError
 # ============================================================
 
 load_dotenv()
-
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
@@ -101,9 +102,9 @@ HIMALAYAS_API = (
     "https://himalayas.app/jobs/api/search"
 )
 
-HIMALAYAS_REQUEST_DELAY = 0.75
-
 REQUEST_TIMEOUT = 30
+
+HIMALAYAS_REQUEST_DELAY = 0.75
 
 STRONG_MATCH_THRESHOLD = 75
 
@@ -154,6 +155,7 @@ PROFILE = {
         "junior web developer",
 
         "web developer",
+
         "frontend developer",
         "front-end developer",
 
@@ -174,6 +176,7 @@ PROFILE = {
 
         "it support",
         "technical support",
+
         "help desk",
         "helpdesk",
 
@@ -217,7 +220,6 @@ PROFILE = {
 
         "bachelor's degree required",
         "bachelor degree required",
-        "bachelor's degree",
 
         "master's degree required",
         "master degree required",
@@ -254,18 +256,17 @@ def require_environment(
     *names: str,
 ) -> None:
 
-    missing = []
-
-    for name in names:
-
-        if not os.getenv(name):
-
-            missing.append(name)
+    missing = [
+        name
+        for name in names
+        if not os.getenv(name)
+    ]
 
     if missing:
 
         raise RuntimeError(
-            "Missing required environment variable(s): "
+            "Missing required environment "
+            "variable(s): "
             + ", ".join(missing)
         )
 
@@ -279,21 +280,20 @@ def clean_text(
 ) -> str:
 
     if value is None:
-
         return ""
 
     if isinstance(value, list):
 
         return ", ".join(
-            str(item)
+            clean_text(item)
             for item in value
         )
 
     if isinstance(value, dict):
 
         return " ".join(
-            str(v)
-            for v in value.values()
+            clean_text(item)
+            for item in value.values()
         )
 
     return str(value)
@@ -311,14 +311,244 @@ def normalize_text(
 
 
 # ============================================================
+# LOCATION CLASSIFICATION
+# ============================================================
+
+def classify_location(
+    job: dict[str, Any],
+) -> tuple[str, list[str]]:
+
+    location = normalize_text(
+        job.get("location")
+    )
+
+    description = normalize_text(
+        job.get("description")
+    )
+
+    title = normalize_text(
+        job.get("title")
+    )
+
+    text = " ".join([
+        location,
+        description,
+        title,
+    ])
+
+    # --------------------------------------------------------
+    # Kenya
+    # --------------------------------------------------------
+
+    kenya_terms = [
+
+        "kenya",
+        "kenyan",
+
+        "nairobi",
+        "mombasa",
+        "malindi",
+        "kilifi",
+
+        "nakuru",
+        "kisumu",
+        "eldoret",
+
+    ]
+
+    kenya_matches = [
+        term
+        for term in kenya_terms
+        if term in text
+    ]
+
+    if kenya_matches:
+
+        return (
+            "KENYA",
+            [
+                "Kenya eligibility detected"
+            ],
+        )
+
+    # --------------------------------------------------------
+    # Africa
+    # --------------------------------------------------------
+
+    africa_terms = [
+
+        "africa",
+        "african",
+
+        "sub-saharan africa",
+
+        "east africa",
+        "east african",
+
+        "africa-wide",
+
+    ]
+
+    if any(
+        term in text
+        for term in africa_terms
+    ):
+
+        return (
+            "REMOTE-AFRICA",
+            [
+                "Africa eligibility detected"
+            ],
+        )
+
+    # --------------------------------------------------------
+    # Worldwide
+    # --------------------------------------------------------
+
+    worldwide_terms = [
+
+        "worldwide",
+
+        "work from anywhere",
+
+        "anywhere in the world",
+
+        "global remote",
+
+        "remote anywhere",
+
+        "remote - worldwide",
+
+        "remote / worldwide",
+
+        "location: worldwide",
+
+        "worldwide remote",
+
+    ]
+
+    if any(
+        term in text
+        for term in worldwide_terms
+    ):
+
+        return (
+            "REMOTE-WORLDWIDE",
+            [
+                "Worldwide remote eligibility detected"
+            ],
+        )
+
+    # --------------------------------------------------------
+    # Explicit restrictions
+    # --------------------------------------------------------
+
+    restrictions = {
+
+        "US": [
+
+            "us only",
+            "usa only",
+            "united states only",
+
+            "must be based in the us",
+            "must be located in the us",
+
+            "us-based only",
+
+            "us residents only",
+
+        ],
+
+        "UK": [
+
+            "uk only",
+            "united kingdom only",
+
+            "must be based in the uk",
+            "must be located in the uk",
+
+            "uk-based only",
+
+            "uk residents only",
+
+        ],
+
+        "EU": [
+
+            "eu only",
+            "european union only",
+
+            "must be based in the eu",
+            "must be located in the eu",
+
+            "eu residents only",
+
+        ],
+
+        "Canada": [
+
+            "canada only",
+            "canadian residents only",
+
+            "must be based in canada",
+            "must be located in canada",
+
+        ],
+
+    }
+
+    for region, terms in restrictions.items():
+
+        matches = [
+            term
+            for term in terms
+            if term in text
+        ]
+
+        if matches:
+
+            return (
+                "REMOTE-RESTRICTED",
+                [
+                    f"Restricted to {region}"
+                ],
+            )
+
+    # --------------------------------------------------------
+    # Generic remote
+    # --------------------------------------------------------
+
+    if "remote" in text:
+
+        return (
+            "UNKNOWN",
+            [
+                "Remote work mentioned, "
+                "but geographic eligibility "
+                "is unclear"
+            ],
+        )
+
+    # --------------------------------------------------------
+    # Unknown
+    # --------------------------------------------------------
+
+    return (
+        "UNKNOWN",
+        [
+            "No clear Kenya eligibility found"
+        ],
+    )
+
+
+# ============================================================
 # HIMALAYAS COLLECTOR
 # ============================================================
 
-def fetch_himalayas_jobs() -> list[dict[str, Any]]:
-    """
-    Fetch ICT-related remote jobs from the
-    public Himalayas jobs API.
-    """
+def fetch_himalayas_jobs() -> list[
+    dict[str, Any]
+]:
 
     logger.info(
         "Fetching jobs from Himalayas..."
@@ -329,12 +559,16 @@ def fetch_himalayas_jobs() -> list[dict[str, Any]]:
         "ICT",
         "IT support",
         "IT technician",
+
         "help desk",
+        "helpdesk",
 
         "technical support",
 
         "web developer",
+
         "frontend developer",
+
         "software developer",
 
         "networking",
@@ -342,10 +576,13 @@ def fetch_himalayas_jobs() -> list[dict[str, Any]]:
         "computer technician",
 
         "JavaScript",
+
         "React",
+
         "Node.js",
 
         "Kotlin",
+
         "Android",
 
     ]
@@ -434,23 +671,23 @@ def fetch_himalayas_jobs() -> list[dict[str, Any]]:
                     )
                 ).strip()
 
-                application_url = (
-                    clean_text(
-                        item.get(
-                            "applicationLink"
-                        )
-                    ).strip()
-                )
+                application_url = clean_text(
+                    item.get(
+                        "applicationLink"
+                    )
+                ).strip()
 
                 guid = clean_text(
-                    item.get("guid")
+                    item.get(
+                        "guid"
+                    )
                 ).strip()
 
                 source_url = (
                     application_url
                     or (
-                        f"https://himalayas.app/jobs/"
-                        f"{guid}"
+                        "https://himalayas.app/jobs/"
+                        + guid
                         if guid
                         else ""
                     )
@@ -498,11 +735,9 @@ def fetch_himalayas_jobs() -> list[dict[str, Any]]:
                         "Remote / Worldwide"
                     )
 
-                employment_type = (
-                    clean_text(
-                        item.get(
-                            "employmentType"
-                        )
+                employment_type = clean_text(
+                    item.get(
+                        "employmentType"
                     )
                 )
 
@@ -516,10 +751,8 @@ def fetch_himalayas_jobs() -> list[dict[str, Any]]:
                     or []
                 )
 
-                category_text = (
-                    clean_text(
-                        categories
-                    )
+                category_text = clean_text(
+                    categories
                 )
 
                 min_salary = item.get(
@@ -563,14 +796,23 @@ def fetch_himalayas_jobs() -> list[dict[str, Any]]:
                         )
 
                 full_description = "\n".join(
+
                     part
+
                     for part in [
+
                         description,
+
                         category_text,
+
                         employment_type,
+
                         salary,
+
                     ]
+
                     if part
+
                 )
 
                 jobs.append({
@@ -670,15 +912,68 @@ def score_job(
 
     matched_locations: list[str] = []
 
-    # --------------------------------------------------------
+    # ========================================================
+    # LOCATION
+    # ========================================================
+
+    (
+        location_classification,
+        location_evidence,
+    ) = classify_location(job)
+
+    if location_classification == "KENYA":
+
+        score += 15
+
+        reasons.append(
+            "🇰🇪 Kenya eligibility detected"
+        )
+
+    elif location_classification == "REMOTE-AFRICA":
+
+        score += 15
+
+        reasons.append(
+            "🌍 Remote role accepts Africa"
+        )
+
+    elif location_classification == "REMOTE-WORLDWIDE":
+
+        score += 15
+
+        reasons.append(
+            "🌍 Remote role appears worldwide"
+        )
+
+    elif location_classification == "REMOTE-RESTRICTED":
+
+        score -= 30
+
+        blockers.extend(
+            location_evidence
+        )
+
+        reasons.append(
+            "⚠️ Geographic restriction detected"
+        )
+
+    else:
+
+        score += 3
+
+        reasons.append(
+            "❓ Location eligibility unclear"
+        )
+
+    # ========================================================
     # TITLE
-    # --------------------------------------------------------
+    # ========================================================
 
     title_matches = [
 
         role
-        for role
-        in PROFILE[
+
+        for role in PROFILE[
             "target_titles"
         ]
 
@@ -688,38 +983,16 @@ def score_job(
 
     if title_matches:
 
-        score += 35
+        score += 30
 
         reasons.append(
-            "Title matches a target ICT role"
+            "Title strongly matches a "
+            "target ICT role"
         )
 
-    # --------------------------------------------------------
-    # LOCATION
-    # --------------------------------------------------------
-
-    for location_name in PROFILE[
-        "locations_preferred"
-    ]:
-
-        if location_name in location:
-
-            matched_locations.append(
-                location_name
-            )
-
-    if matched_locations:
-
-        score += 20
-
-        reasons.append(
-            "Preferred location or "
-            "remote option matched"
-        )
-
-    # --------------------------------------------------------
+    # ========================================================
     # SKILLS
-    # --------------------------------------------------------
+    # ========================================================
 
     for skill in PROFILE[
         "skills"
@@ -732,8 +1005,8 @@ def score_job(
             )
 
     skill_points = min(
-        len(matched_skills) * 6,
-        30,
+        len(matched_skills) * 5,
+        25,
     )
 
     score += skill_points
@@ -747,24 +1020,22 @@ def score_job(
             )
         )
 
-    # --------------------------------------------------------
-    # EDUCATION / EXPERIENCE
-    # --------------------------------------------------------
+    # ========================================================
+    # EDUCATION
+    # ========================================================
 
-    entry_level_terms = [
+    education_terms = [
 
         "diploma",
+        "certificate",
 
         "entry level",
-
         "entry-level",
 
         "intern",
-
         "internship",
 
         "trainee",
-
         "junior",
 
         "graduate",
@@ -773,28 +1044,93 @@ def score_job(
 
         "no experience",
 
+        "no experience required",
+
     ]
 
-    entry_matches = [
+    education_matches = [
 
         term
-        for term in entry_level_terms
+
+        for term in education_terms
+
         if term in combined
 
     ]
 
-    if entry_matches:
+    if education_matches:
 
         score += 15
 
         reasons.append(
-            "Entry-level / diploma-friendly "
+            "Entry-level/diploma-friendly "
             "language detected"
         )
 
-    # --------------------------------------------------------
+    # ========================================================
+    # EXPERIENCE
+    # ========================================================
+
+    experience_terms = [
+
+        "junior",
+
+        "entry level",
+        "entry-level",
+
+        "intern",
+        "internship",
+
+        "trainee",
+
+        "graduate",
+
+        "no experience",
+
+        "no experience required",
+
+        "no experience necessary",
+
+    ]
+
+    if any(
+        term in combined
+        for term in experience_terms
+    ):
+
+        score += 10
+
+        reasons.append(
+            "Experience requirements "
+            "appear suitable"
+        )
+
+    # ========================================================
+    # PREFERRED LOCATIONS
+    # ========================================================
+
+    for preferred_location in PROFILE[
+        "locations_preferred"
+    ]:
+
+        if preferred_location in combined:
+
+            matched_locations.append(
+                preferred_location
+            )
+
+    if matched_locations:
+
+        reasons.append(
+            "Preferred location mentioned: "
+            + ", ".join(
+                matched_locations[:4]
+            )
+        )
+
+    # ========================================================
     # NEGATIVES
-    # --------------------------------------------------------
+    # ========================================================
 
     for blocker in PROFILE[
         "soft_negatives"
@@ -807,8 +1143,22 @@ def score_job(
             )
 
     score -= (
-        len(blockers) * 15
+        len(blockers) * 10
     )
+
+    # ========================================================
+    # EXTRA RESTRICTION PENALTY
+    # ========================================================
+
+    if location_classification == (
+        "REMOTE-RESTRICTED"
+    ):
+
+        score -= 20
+
+    # ========================================================
+    # SCORE NORMALIZATION
+    # ========================================================
 
     score = max(
         0,
@@ -817,6 +1167,10 @@ def score_job(
             score,
         ),
     )
+
+    # ========================================================
+    # TIER
+    # ========================================================
 
     if score >= STRONG_MATCH_THRESHOLD:
 
@@ -829,6 +1183,15 @@ def score_job(
     else:
 
         tier = "poor"
+
+    # ========================================================
+    # FINAL ELIGIBILITY REASON
+    # ========================================================
+
+    reasons.append(
+        "Eligibility: "
+        + location_classification
+    )
 
     return (
         score,
@@ -904,11 +1267,9 @@ def save_job(
 
     }
 
-    job_id = database.insert_job(
+    return database.insert_job(
         payload
     )
-
-    return job_id
 
 
 # ============================================================
@@ -960,8 +1321,11 @@ def send_telegram_alert(
     )
 
     response = requests.post(
+
         telegram_url,
+
         data={
+
             "chat_id":
                 TELEGRAM_CHAT_ID,
 
@@ -970,8 +1334,11 @@ def send_telegram_alert(
 
             "disable_web_page_preview":
                 False,
+
         },
+
         timeout=30,
+
     )
 
     response.raise_for_status()
@@ -1014,21 +1381,33 @@ def send_gmail_digest(
     )
 
     strong = [
+
         job
+
         for job in jobs
+
         if job["tier"] == "strong"
+
     ]
 
     consider = [
+
         job
+
         for job in jobs
+
         if job["tier"] == "consider"
+
     ]
 
     poor = [
+
         job
+
         for job in jobs
+
         if job["tier"] == "poor"
+
     ]
 
     lines = [
@@ -1046,7 +1425,10 @@ def send_gmail_digest(
 
         f"🟢 Strong matches: {len(strong)}",
 
-        f"🟡 Worth considering: {len(consider)}",
+        (
+            f"🟡 Worth considering: "
+            f"{len(consider)}"
+        ),
 
         f"🔴 Poor matches: {len(poor)}",
 
@@ -1087,13 +1469,15 @@ def send_gmail_digest(
         ])
 
         for job in sorted(
+
             group,
-            key=lambda x: (
+
+            key=lambda item:
                 -int(
-                    x["score"]
+                    item["score"]
                     or 0
-                )
-            ),
+                ),
+
         ):
 
             lines.extend([
@@ -1226,14 +1610,23 @@ def run_scan(
             )
 
             job_id = save_job(
+
                 database,
+
                 job,
+
                 score,
+
                 tier,
+
                 reasons,
+
                 blockers,
+
                 matched_skills,
+
                 matched_locations,
+
             )
 
             if job_id is None:
@@ -1243,10 +1636,15 @@ def run_scan(
             new_jobs += 1
 
             logger.info(
+
                 "NEW JOB | %s | %s%% | %s",
+
                 job["title"],
+
                 score,
+
                 tier,
+
             )
 
             if tier == "strong":
@@ -1256,9 +1654,13 @@ def run_scan(
                 try:
 
                     send_telegram_alert(
+
                         job,
+
                         score,
+
                         reasons,
+
                     )
 
                     database.mark_telegram_sent(
@@ -1266,34 +1668,48 @@ def run_scan(
                     )
 
                     logger.info(
+
                         "Telegram alert sent "
                         "for job %s",
+
                         job_id,
+
                     )
 
                 except Exception as exc:
 
                     logger.error(
+
                         "Telegram alert failed "
                         "for job %s: %s",
+
                         job_id,
+
                         exc,
+
                     )
 
         except DatabaseError as exc:
 
             logger.error(
+
                 "Database error processing "
                 "%s: %s",
+
                 source_url,
+
                 exc,
+
             )
 
         except Exception as exc:
 
             logger.exception(
+
                 "Unexpected error processing job: %s",
+
                 exc,
+
             )
 
     logger.info(
@@ -1370,9 +1786,13 @@ def run_digest(
     except Exception as exc:
 
         logger.exception(
+
             "Digest failed. "
-            "Jobs were NOT marked as digested: %s",
+            "Jobs were NOT marked "
+            "as digested: %s",
+
             exc,
+
         )
 
         raise
@@ -1389,9 +1809,11 @@ def run_digest(
 def main() -> int:
 
     parser = argparse.ArgumentParser(
+
         description=(
             "Gunga Job Radar"
         )
+
     )
 
     parser.add_argument(
@@ -1415,9 +1837,12 @@ def main() -> int:
     args = parser.parse_args()
 
     logger.info(
+
         "Starting Gunga Job Radar "
         "in %s mode...",
+
         args.mode,
+
     )
 
     database = build_database()
