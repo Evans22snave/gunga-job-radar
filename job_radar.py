@@ -1579,7 +1579,6 @@ def run_scan(
     jobs_fetched = len(jobs)
     jobs_processed = 0
     jobs_new = 0
-    jobs_existing_reevaluated = 0
     strong_matches = 0
     consider_matches = 0
     telegram_attempts = 0
