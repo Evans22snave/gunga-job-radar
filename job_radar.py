@@ -8,16 +8,16 @@ Pipeline:
           ↓
        Collector
           ↓
-    Location Classification
+     Location Classification
           ↓
-      Match Scoring
+       Match Scoring
           ↓
-       PostgreSQL
+        PostgreSQL
           ↓
-    ┌─────┴─────┐
-    ↓           ↓
- Telegram     Gmail
- Alerts       Digest
+     ┌─────┴─────┐
+     ↓           ↓
+  Telegram     Gmail
+  Alerts       Digest
 
 Modes:
 
@@ -1576,9 +1576,15 @@ def run_scan(
         len(jobs),
     )
 
-    new_jobs = 0
-
+    jobs_fetched = len(jobs)
+    jobs_processed = 0
+    jobs_new = 0
+    jobs_existing_reevaluated = 0
     strong_matches = 0
+    consider_matches = 0
+    telegram_attempts = 0
+    telegram_sent = 0
+    telegram_failures = 0
 
     for job in jobs:
 
@@ -1587,16 +1593,13 @@ def run_scan(
         )
 
         if not source_url:
-
             continue
 
         try:
 
-            if database.job_exists(
-                source_url
-            ):
-
-                continue
+            # ================================================
+            # Score the job (both new and existing)
+            # ================================================
 
             (
                 score,
@@ -1608,6 +1611,10 @@ def run_scan(
             ) = score_job(
                 job
             )
+
+            # ================================================
+            # Attempt to insert/update in database
+            # ================================================
 
             job_id = save_job(
 
@@ -1629,11 +1636,21 @@ def run_scan(
 
             )
 
+            jobs_processed += 1
+
+            # If insert_job returned None, it was a duplicate
             if job_id is None:
+
+                logger.info(
+                    "JOB DUPLICATE | %s | %s%%",
+                    job["title"],
+                    score,
+                )
 
                 continue
 
-            new_jobs += 1
+            # New job was inserted
+            jobs_new += 1
 
             logger.info(
 
@@ -1647,9 +1664,15 @@ def run_scan(
 
             )
 
+            # ================================================
+            # Handle strong matches
+            # ================================================
+
             if tier == "strong":
 
                 strong_matches += 1
+
+                telegram_attempts += 1
 
                 try:
 
@@ -1667,6 +1690,8 @@ def run_scan(
                         job_id
                     )
 
+                    telegram_sent += 1
+
                     logger.info(
 
                         "Telegram alert sent "
@@ -1678,6 +1703,8 @@ def run_scan(
 
                 except Exception as exc:
 
+                    telegram_failures += 1
+
                     logger.error(
 
                         "Telegram alert failed "
@@ -1688,6 +1715,10 @@ def run_scan(
                         exc,
 
                     )
+
+            elif tier == "consider":
+
+                consider_matches += 1
 
         except DatabaseError as exc:
 
@@ -1712,16 +1743,42 @@ def run_scan(
 
             )
 
+    logger.info("")
+    logger.info(
+        "========== SCAN METRICS =========="
+    )
+    logger.info(
+        "Jobs fetched: %d",
+        jobs_fetched,
+    )
+    logger.info(
+        "Jobs processed: %d",
+        jobs_processed,
+    )
     logger.info(
         "New jobs saved: %d",
-        new_jobs,
+        jobs_new,
     )
-
     logger.info(
         "Strong matches: %d",
         strong_matches,
     )
-
+    logger.info(
+        "Consider matches: %d",
+        consider_matches,
+    )
+    logger.info(
+        "Telegram attempts: %d",
+        telegram_attempts,
+    )
+    logger.info(
+        "Telegram sent: %d",
+        telegram_sent,
+    )
+    logger.info(
+        "Telegram failures: %d",
+        telegram_failures,
+    )
     logger.info(
         "========== SCAN COMPLETE =========="
     )
