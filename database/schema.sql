@@ -1,10 +1,43 @@
 -- ============================================================
 -- GUNGA JOB RADAR
 -- DATABASE SCHEMA
--- Phase 3
 -- ============================================================
 
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
+-- ============================================================
+-- JOBS
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS jobs (
+    id SERIAL PRIMARY KEY,
+
+    source TEXT NOT NULL,
+
+    source_url TEXT NOT NULL UNIQUE,
+
+    title TEXT NOT NULL,
+
+    company TEXT,
+
+    location TEXT,
+
+    description TEXT,
+
+    score INTEGER NOT NULL DEFAULT 0,
+
+    tier TEXT,
+
+    reasons TEXT,
+
+    blockers TEXT,
+
+    telegram_sent BOOLEAN NOT NULL DEFAULT FALSE,
+
+    digested BOOLEAN NOT NULL DEFAULT FALSE,
+
+    fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 
 
 -- ============================================================
@@ -12,7 +45,7 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 -- ============================================================
 
 CREATE TABLE IF NOT EXISTS job_sources (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id SERIAL PRIMARY KEY,
 
     name TEXT NOT NULL UNIQUE,
 
@@ -25,16 +58,230 @@ CREATE TABLE IF NOT EXISTS job_sources (
 
 
 -- ============================================================
--- JOBS
+-- NOTIFICATIONS
 -- ============================================================
 
-CREATE TABLE IF NOT EXISTS jobs (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+CREATE TABLE IF NOT EXISTS notifications (
+    id SERIAL PRIMARY KEY,
 
-    source_id UUID
-        REFERENCES job_sources(id)
-        ON DELETE SET NULL,
+    job_id INTEGER
+        REFERENCES jobs(id)
+        ON DELETE CASCADE,
 
+    channel TEXT NOT NULL,
+
+    status TEXT NOT NULL DEFAULT 'pending',
+
+    attempts INTEGER NOT NULL DEFAULT 0,
+
+    last_error TEXT,
+
+    sent_at TIMESTAMPTZ,
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+
+-- ============================================================
+-- SAVED JOBS
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS saved_jobs (
+    id SERIAL PRIMARY KEY,
+
+    job_id INTEGER NOT NULL
+        REFERENCES jobs(id)
+        ON DELETE CASCADE,
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    UNIQUE(job_id)
+);
+
+
+-- ============================================================
+-- APPLICATIONS
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS applications (
+    id SERIAL PRIMARY KEY,
+
+    job_id INTEGER NOT NULL
+        REFERENCES jobs(id)
+        ON DELETE CASCADE,
+
+    status TEXT NOT NULL DEFAULT 'saved',
+
+    applied_at TIMESTAMPTZ,
+
+    interview_at TIMESTAMPTZ,
+
+    notes TEXT,
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    UNIQUE(job_id)
+);
+
+
+-- ============================================================
+-- JOB MATCHES
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS job_matches (
+    id SERIAL PRIMARY KEY,
+
+    job_id INTEGER NOT NULL
+        REFERENCES jobs(id)
+        ON DELETE CASCADE,
+
+    score INTEGER NOT NULL DEFAULT 0,
+
+    tier TEXT,
+
+    matched_skills TEXT,
+
+    matched_locations TEXT,
+
+    reasons TEXT,
+
+    blockers TEXT,
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    UNIQUE(job_id)
+);
+
+
+-- ============================================================
+-- INDEXES
+-- ============================================================
+
+CREATE INDEX IF NOT EXISTS idx_jobs_score
+ON jobs(score DESC);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_location
+ON jobs(location);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_source
+ON jobs(source);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_fetched_at
+ON jobs(fetched_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_tier
+ON jobs(tier);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_telegram_sent
+ON jobs(telegram_sent);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_digested
+ON jobs(digested);
+
+CREATE INDEX IF NOT EXISTS idx_notifications_status
+ON notifications(status);
+
+CREATE INDEX IF NOT EXISTS idx_notifications_channel
+ON notifications(channel);
+
+CREATE INDEX IF NOT EXISTS idx_applications_status
+ON applications(status);
+
+
+-- ============================================================
+-- UPDATED_AT FUNCTION
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION
+update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+
+    NEW.updated_at = NOW();
+
+    RETURN NEW;
+
+END;
+$$ LANGUAGE plpgsql;
+
+
+-- ============================================================
+-- JOB TRIGGER
+-- ============================================================
+
+DROP TRIGGER IF EXISTS
+jobs_updated_at
+ON jobs;
+
+CREATE TRIGGER
+jobs_updated_at
+
+BEFORE UPDATE ON jobs
+
+FOR EACH ROW
+
+EXECUTE FUNCTION
+update_updated_at_column();
+
+
+-- ============================================================
+-- NOTIFICATION TRIGGER
+-- ============================================================
+
+DROP TRIGGER IF EXISTS
+notifications_updated_at
+ON notifications;
+
+CREATE TRIGGER
+notifications_updated_at
+
+BEFORE UPDATE ON notifications
+
+FOR EACH ROW
+
+EXECUTE FUNCTION
+update_updated_at_column();
+
+
+-- ============================================================
+-- APPLICATION TRIGGER
+-- ============================================================
+
+DROP TRIGGER IF EXISTS
+applications_updated_at
+ON applications;
+
+CREATE TRIGGER
+applications_updated_at
+
+BEFORE UPDATE ON applications
+
+FOR EACH ROW
+
+EXECUTE FUNCTION
+update_updated_at_column();
+
+
+-- ============================================================
+-- DEFAULT SOURCE
+-- ============================================================
+
+INSERT INTO job_sources (
+    name,
+    base_url,
+    active
+)
+VALUES (
+    'ReliefWeb',
+    'https://reliefweb.int',
+    TRUE
+)
+ON CONFLICT (name)
+DO NOTHING;
     source TEXT NOT NULL,
 
     source_url TEXT NOT NULL UNIQUE,
