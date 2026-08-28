@@ -1,12 +1,12 @@
 """
 Gunga Job Radar
-Database Migration — Phase 3
+Safe Database Migration
 
-Safely upgrades the existing jobs table without deleting
-existing job records.
+This upgrades the existing Phase 1 database
+without deleting existing jobs.
 
-Run:
-    python database/migrate.py
+IMPORTANT:
+The existing jobs.id SERIAL/INTEGER is preserved.
 """
 
 from __future__ import annotations
@@ -21,155 +21,179 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-def get_database_url() -> str:
-    database_url = os.getenv("DATABASE_URL")
+def main():
+
+    database_url = os.getenv(
+        "DATABASE_URL"
+    )
 
     if not database_url:
-        raise RuntimeError(
-            "DATABASE_URL environment variable is missing."
+
+        print(
+            "ERROR: DATABASE_URL is missing."
         )
 
-    return database_url
+        return 1
 
+    print()
+    print(
+        "=" * 60
+    )
+    print(
+        "GUNGA JOB RADAR DATABASE MIGRATION"
+    )
+    print(
+        "=" * 60
+    )
+    print()
 
-def migrate():
-    database_url = get_database_url()
+    print(
+        "Connecting to database..."
+    )
 
-    print("Connecting to database...")
-
-    conn = psycopg2.connect(database_url)
+    conn = psycopg2.connect(
+        database_url
+    )
 
     try:
 
         with conn.cursor() as cur:
 
-            print("Creating job_sources table...")
+            # =================================================
+            # VERIFY JOBS TABLE
+            # =================================================
 
             cur.execute(
                 """
-                CREATE EXTENSION IF NOT EXISTS pgcrypto;
-
-                CREATE TABLE IF NOT EXISTS job_sources (
-                    id UUID PRIMARY KEY
-                        DEFAULT gen_random_uuid(),
-
-                    name TEXT NOT NULL UNIQUE,
-
-                    base_url TEXT,
-
-                    active BOOLEAN NOT NULL
-                        DEFAULT TRUE,
-
-                    created_at TIMESTAMPTZ
-                        NOT NULL DEFAULT NOW()
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM information_schema.tables
+                    WHERE table_name = 'jobs'
                 );
                 """
             )
 
-            print("Upgrading jobs table...")
+            jobs_exists = cur.fetchone()[0]
 
-            # ------------------------------------------------
-            # Add missing columns individually.
-            # PostgreSQL will leave existing data untouched.
-            # ------------------------------------------------
+            if not jobs_exists:
 
-            columns = [
-                (
-                    "source_id",
-                    """
-                    UUID REFERENCES job_sources(id)
-                    ON DELETE SET NULL
-                    """
-                ),
-                (
-                    "employment_type",
-                    "TEXT"
-                ),
-                (
-                    "salary",
-                    "TEXT"
-                ),
-                (
-                    "category",
-                    "TEXT"
-                ),
-                (
-                    "published_at",
-                    "TIMESTAMPTZ"
-                ),
-                (
-                    "deadline",
-                    "TIMESTAMPTZ"
-                ),
-                (
-                    "updated_at",
-                    "TIMESTAMPTZ DEFAULT NOW()"
-                ),
-                (
-                    "tier",
-                    "TEXT"
-                ),
-                (
-                    "reasons",
-                    "TEXT"
-                ),
-                (
-                    "blockers",
-                    "TEXT"
-                ),
-                (
-                    "matched_skills",
-                    "TEXT"
-                ),
-                (
-                    "matched_locations",
-                    "TEXT"
-                ),
-                (
-                    "email_sent",
-                    "BOOLEAN NOT NULL DEFAULT FALSE"
-                ),
-                (
-                    "is_active",
-                    "BOOLEAN NOT NULL DEFAULT TRUE"
-                ),
-            ]
-
-            for column_name, column_type in columns:
-
-                cur.execute(
-                    f"""
-                    ALTER TABLE jobs
-                    ADD COLUMN IF NOT EXISTS
-                    {column_name}
-                    {column_type};
-                    """
+                print(
+                    "jobs table does not exist."
                 )
 
-            # ------------------------------------------------
-            # Make sure fetched_at exists.
-            # ------------------------------------------------
+                print(
+                    "Creating fresh schema..."
+                )
+
+                with open(
+                    os.path.join(
+                        os.path.dirname(
+                            __file__
+                        ),
+                        "schema.sql",
+                    ),
+                    "r",
+                    encoding="utf-8",
+                ) as file:
+
+                    cur.execute(
+                        file.read()
+                    )
+
+                conn.commit()
+
+                print(
+                    "Fresh schema created."
+                )
+
+                return 0
+
+            # =================================================
+            # VERIFY EXISTING ID TYPE
+            # =================================================
+
+            cur.execute(
+                """
+                SELECT
+                    data_type
+                FROM information_schema.columns
+                WHERE table_name = 'jobs'
+                  AND column_name = 'id';
+                """
+            )
+
+            result = cur.fetchone()
+
+            if result:
+
+                print(
+                    f"Existing jobs.id type: "
+                    f"{result[0]}"
+                )
+
+            # =================================================
+            # ADD UPDATED_AT
+            # =================================================
 
             cur.execute(
                 """
                 ALTER TABLE jobs
                 ADD COLUMN IF NOT EXISTS
-                fetched_at
-                TIMESTAMPTZ DEFAULT NOW();
+                updated_at
+                TIMESTAMPTZ
+                DEFAULT NOW();
                 """
             )
 
-            # ------------------------------------------------
-            # Fill NULL timestamps for old records.
-            # ------------------------------------------------
+            # =================================================
+            # ADD NEW JOB FIELDS
+            # =================================================
 
             cur.execute(
                 """
-                UPDATE jobs
-                SET fetched_at = NOW()
-                WHERE fetched_at IS NULL;
+                ALTER TABLE jobs
+                ADD COLUMN IF NOT EXISTS
+                employment_type TEXT;
+
+                ALTER TABLE jobs
+                ADD COLUMN IF NOT EXISTS
+                salary TEXT;
+
+                ALTER TABLE jobs
+                ADD COLUMN IF NOT EXISTS
+                category TEXT;
+
+                ALTER TABLE jobs
+                ADD COLUMN IF NOT EXISTS
+                published_at TIMESTAMPTZ;
+
+                ALTER TABLE jobs
+                ADD COLUMN IF NOT EXISTS
+                deadline TIMESTAMPTZ;
+
+                ALTER TABLE jobs
+                ADD COLUMN IF NOT EXISTS
+                matched_skills TEXT;
+
+                ALTER TABLE jobs
+                ADD COLUMN IF NOT EXISTS
+                matched_locations TEXT;
+
+                ALTER TABLE jobs
+                ADD COLUMN IF NOT EXISTS
+                email_sent BOOLEAN
+                NOT NULL DEFAULT FALSE;
+
+                ALTER TABLE jobs
+                ADD COLUMN IF NOT EXISTS
+                is_active BOOLEAN
+                NOT NULL DEFAULT TRUE;
                 """
             )
+
+            # =================================================
+            # BACKFILL UPDATED_AT
+            # =================================================
 
             cur.execute(
                 """
@@ -179,169 +203,18 @@ def migrate():
                 """
             )
 
-            # ------------------------------------------------
-            # Make source available for old records.
-            # ------------------------------------------------
-
-            cur.execute(
-                """
-                UPDATE jobs
-                SET source = 'MyJobMag'
-                WHERE source IS NULL
-                   OR TRIM(source) = '';
-                """
-            )
-
-            # ------------------------------------------------
-            # Create source record.
-            # ------------------------------------------------
-
-            cur.execute(
-                """
-                INSERT INTO job_sources (
-                    name,
-                    base_url,
-                    active
-                )
-                VALUES (
-                    'MyJobMag',
-                    'https://www.myjobmag.co.ke',
-                    TRUE
-                )
-                ON CONFLICT (name)
-                DO NOTHING;
-                """
-            )
-
-            # ------------------------------------------------
-            # Link existing MyJobMag jobs.
-            # ------------------------------------------------
-
-            cur.execute(
-                """
-                UPDATE jobs
-                SET source_id = (
-                    SELECT id
-                    FROM job_sources
-                    WHERE name = 'MyJobMag'
-                    LIMIT 1
-                )
-                WHERE source_id IS NULL
-                  AND source = 'MyJobMag';
-                """
-            )
-
-            # ------------------------------------------------
-            # Create indexes.
-            # ------------------------------------------------
-
-            print("Creating indexes...")
-
-            indexes = [
-                """
-                CREATE INDEX IF NOT EXISTS
-                idx_jobs_score
-                ON jobs(score DESC);
-                """,
-
-                """
-                CREATE INDEX IF NOT EXISTS
-                idx_jobs_location
-                ON jobs(location);
-                """,
-
-                """
-                CREATE INDEX IF NOT EXISTS
-                idx_jobs_source
-                ON jobs(source);
-                """,
-
-                """
-                CREATE INDEX IF NOT EXISTS
-                idx_jobs_source_id
-                ON jobs(source_id);
-                """,
-
-                """
-                CREATE INDEX IF NOT EXISTS
-                idx_jobs_fetched_at
-                ON jobs(fetched_at DESC);
-                """,
-
-                """
-                CREATE INDEX IF NOT EXISTS
-                idx_jobs_published_at
-                ON jobs(published_at DESC);
-                """,
-
-                """
-                CREATE INDEX IF NOT EXISTS
-                idx_jobs_deadline
-                ON jobs(deadline);
-                """,
-
-                """
-                CREATE INDEX IF NOT EXISTS
-                idx_jobs_active
-                ON jobs(is_active);
-                """,
-
-                """
-                CREATE INDEX IF NOT EXISTS
-                idx_jobs_tier
-                ON jobs(tier);
-                """,
-            ]
-
-            for index_sql in indexes:
-                cur.execute(index_sql)
-
-            # ------------------------------------------------
-            # JOB MATCHES
-            # ------------------------------------------------
-
-            print("Creating job_matches...")
-
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS job_matches (
-                    id UUID PRIMARY KEY
-                        DEFAULT gen_random_uuid(),
-
-                    job_id UUID,
-
-                    score INTEGER NOT NULL
-                        DEFAULT 0,
-
-                    tier TEXT,
-
-                    matched_skills TEXT,
-
-                    matched_locations TEXT,
-
-                    reasons TEXT,
-
-                    blockers TEXT,
-
-                    created_at TIMESTAMPTZ
-                        NOT NULL DEFAULT NOW()
-                );
-                """
-            )
-
-            # ------------------------------------------------
+            # =================================================
             # NOTIFICATIONS
-            # ------------------------------------------------
-
-            print("Creating notifications...")
+            # =================================================
 
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS notifications (
-                    id UUID PRIMARY KEY
-                        DEFAULT gen_random_uuid(),
+                    id SERIAL PRIMARY KEY,
 
-                    job_id UUID,
+                    job_id INTEGER
+                        REFERENCES jobs(id)
+                        ON DELETE CASCADE,
 
                     channel TEXT NOT NULL,
 
@@ -364,19 +237,18 @@ def migrate():
                 """
             )
 
-            # ------------------------------------------------
+            # =================================================
             # SAVED JOBS
-            # ------------------------------------------------
-
-            print("Creating saved_jobs...")
+            # =================================================
 
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS saved_jobs (
-                    id UUID PRIMARY KEY
-                        DEFAULT gen_random_uuid(),
+                    id SERIAL PRIMARY KEY,
 
-                    job_id UUID,
+                    job_id INTEGER NOT NULL
+                        REFERENCES jobs(id)
+                        ON DELETE CASCADE,
 
                     created_at TIMESTAMPTZ
                         NOT NULL DEFAULT NOW(),
@@ -386,19 +258,18 @@ def migrate():
                 """
             )
 
-            # ------------------------------------------------
+            # =================================================
             # APPLICATIONS
-            # ------------------------------------------------
-
-            print("Creating applications...")
+            # =================================================
 
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS applications (
-                    id UUID PRIMARY KEY
-                        DEFAULT gen_random_uuid(),
+                    id SERIAL PRIMARY KEY,
 
-                    job_id UUID,
+                    job_id INTEGER NOT NULL
+                        REFERENCES jobs(id)
+                        ON DELETE CASCADE,
 
                     status TEXT NOT NULL
                         DEFAULT 'saved',
@@ -420,11 +291,135 @@ def migrate():
                 """
             )
 
-            # ------------------------------------------------
-            # TRIGGER FUNCTION
-            # ------------------------------------------------
+            # =================================================
+            # JOB MATCHES
+            # =================================================
 
-            print("Creating update trigger function...")
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS job_matches (
+                    id SERIAL PRIMARY KEY,
+
+                    job_id INTEGER NOT NULL
+                        REFERENCES jobs(id)
+                        ON DELETE CASCADE,
+
+                    score INTEGER NOT NULL
+                        DEFAULT 0,
+
+                    tier TEXT,
+
+                    matched_skills TEXT,
+
+                    matched_locations TEXT,
+
+                    reasons TEXT,
+
+                    blockers TEXT,
+
+                    created_at TIMESTAMPTZ
+                        NOT NULL DEFAULT NOW(),
+
+                    UNIQUE(job_id)
+                );
+                """
+            )
+
+            # =================================================
+            # JOB SOURCES
+            # =================================================
+
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS job_sources (
+                    id SERIAL PRIMARY KEY,
+
+                    name TEXT NOT NULL UNIQUE,
+
+                    base_url TEXT,
+
+                    active BOOLEAN NOT NULL
+                        DEFAULT TRUE,
+
+                    created_at TIMESTAMPTZ
+                        NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+
+            cur.execute(
+                """
+                INSERT INTO job_sources (
+                    name,
+                    base_url,
+                    active
+                )
+                VALUES (
+                    'ReliefWeb',
+                    'https://reliefweb.int',
+                    TRUE
+                )
+                ON CONFLICT (name)
+                DO NOTHING;
+                """
+            )
+
+            # =================================================
+            # INDEXES
+            # =================================================
+
+            indexes = [
+
+                """
+                CREATE INDEX IF NOT EXISTS
+                idx_jobs_score
+                ON jobs(score DESC);
+                """,
+
+                """
+                CREATE INDEX IF NOT EXISTS
+                idx_jobs_location
+                ON jobs(location);
+                """,
+
+                """
+                CREATE INDEX IF NOT EXISTS
+                idx_jobs_source
+                ON jobs(source);
+                """,
+
+                """
+                CREATE INDEX IF NOT EXISTS
+                idx_jobs_fetched_at
+                ON jobs(fetched_at DESC);
+                """,
+
+                """
+                CREATE INDEX IF NOT EXISTS
+                idx_jobs_tier
+                ON jobs(tier);
+                """,
+
+                """
+                CREATE INDEX IF NOT EXISTS
+                idx_notifications_status
+                ON notifications(status);
+                """,
+
+                """
+                CREATE INDEX IF NOT EXISTS
+                idx_applications_status
+                ON applications(status);
+                """,
+            ]
+
+            for sql in indexes:
+
+                cur.execute(sql)
+
+            # =================================================
+            # TRIGGER FUNCTION
+            # =================================================
 
             cur.execute(
                 """
@@ -439,9 +434,9 @@ def migrate():
                 """
             )
 
-            # ------------------------------------------------
+            # =================================================
             # JOB TRIGGER
-            # ------------------------------------------------
+            # =================================================
 
             cur.execute(
                 """
@@ -449,17 +444,21 @@ def migrate():
                 jobs_updated_at
                 ON jobs;
 
-                CREATE TRIGGER jobs_updated_at
+                CREATE TRIGGER
+                jobs_updated_at
+
                 BEFORE UPDATE ON jobs
+
                 FOR EACH ROW
+
                 EXECUTE FUNCTION
                 update_updated_at_column();
                 """
             )
 
-            # ------------------------------------------------
+            # =================================================
             # NOTIFICATION TRIGGER
-            # ------------------------------------------------
+            # =================================================
 
             cur.execute(
                 """
@@ -467,17 +466,21 @@ def migrate():
                 notifications_updated_at
                 ON notifications;
 
-                CREATE TRIGGER notifications_updated_at
+                CREATE TRIGGER
+                notifications_updated_at
+
                 BEFORE UPDATE ON notifications
+
                 FOR EACH ROW
+
                 EXECUTE FUNCTION
                 update_updated_at_column();
                 """
             )
 
-            # ------------------------------------------------
+            # =================================================
             # APPLICATION TRIGGER
-            # ------------------------------------------------
+            # =================================================
 
             cur.execute(
                 """
@@ -485,36 +488,77 @@ def migrate():
                 applications_updated_at
                 ON applications;
 
-                CREATE TRIGGER applications_updated_at
+                CREATE TRIGGER
+                applications_updated_at
+
                 BEFORE UPDATE ON applications
+
                 FOR EACH ROW
+
                 EXECUTE FUNCTION
                 update_updated_at_column();
                 """
             )
 
+            # =================================================
+            # COMMIT
+            # =================================================
+
             conn.commit()
 
         print()
-        print("=" * 60)
-        print("MIGRATION COMPLETED SUCCESSFULLY")
-        print("=" * 60)
-        print()
-        print("Existing jobs were preserved.")
-        print("New Phase 3 tables are ready.")
+        print(
+            "=" * 60
+        )
+        print(
+            "MIGRATION SUCCESSFUL"
+        )
+        print(
+            "=" * 60
+        )
         print()
 
-    except Exception:
+        print(
+            "Existing jobs were preserved."
+        )
+
+        print(
+            "Existing jobs.id was preserved."
+        )
+
+        print(
+            "New Phase 3 tables were created."
+        )
+
+        print(
+            "Indexes and triggers were installed."
+        )
+
+        print()
+
+        return 0
+
+    except Exception as exc:
 
         conn.rollback()
 
         print()
-        print("=" * 60)
-        print("MIGRATION FAILED")
-        print("=" * 60)
+        print(
+            "=" * 60
+        )
+        print(
+            "MIGRATION FAILED"
+        )
+        print(
+            "=" * 60
+        )
         print()
 
-        raise
+        print(
+            f"Error: {exc}"
+        )
+
+        return 1
 
     finally:
 
@@ -523,14 +567,6 @@ def migrate():
 
 if __name__ == "__main__":
 
-    try:
-        migrate()
-
-    except Exception as exc:
-
-        print(
-            f"ERROR: {exc}",
-            file=sys.stderr,
-        )
-
-        sys.exit(1)
+    sys.exit(
+        main()
+                )
