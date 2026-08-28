@@ -2,23 +2,22 @@ name: Gunga Job Radar
 
 on:
   workflow_dispatch:
-
-  schedule:
-    # Scan every 3 hours
-    - cron: "0 */3 * * *"
-
-    # Daily digest at 6:00 AM UTC
-    # = 9:00 AM Kenya time
-    - cron: "0 6 * * *"
+    inputs:
+      mode:
+        description: "Choose what the Job Radar should run"
+        required: true
+        default: "scan"
+        type: choice
+        options:
+          - scan
+          - digest
+          - both
 
 jobs:
-
-  scan:
-    name: Scan and Score Jobs
+  job-radar:
     runs-on: ubuntu-latest
 
     steps:
-
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -32,7 +31,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run Job Radar scan
+      - name: Run Gunga Job Radar
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -40,34 +39,5 @@ jobs:
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
         run: |
-          python job_radar.py --mode scan
-
-
-  digest:
-    name: Send Daily Digest
-    runs-on: ubuntu-latest
-
-    steps:
-
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Run Job Radar digest
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
-          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-        run: |
-          python job_radar.py --mode digest
+          echo "Running Gunga Job Radar in ${{ inputs.mode }} mode..."
+          python job_radar.py --mode "${{ inputs.mode }}"
