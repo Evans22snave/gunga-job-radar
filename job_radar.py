@@ -4,7 +4,7 @@ Phase 3 — End-to-End Job Monitoring System
 
 Pipeline:
 
-    ReliefWeb API
+    Himalayas API
           ↓
        Collector
           ↓
@@ -22,6 +22,14 @@ Modes:
     python job_radar.py --mode scan
     python job_radar.py --mode digest
     python job_radar.py --mode both
+
+Required environment variables:
+
+    DATABASE_URL
+    TELEGRAM_BOT_TOKEN
+    TELEGRAM_CHAT_ID
+    GMAIL_ADDRESS
+    GMAIL_APP_PASSWORD
 """
 
 from __future__ import annotations
@@ -31,47 +39,40 @@ import logging
 import os
 import smtplib
 import time
-
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from typing import Any
 
 import requests
 from dotenv import load_dotenv
 
-from database.db import Database
+from database.db import Database, DatabaseError
 
 
 # ============================================================
-# CONFIGURATION
+# ENVIRONMENT
 # ============================================================
 
 load_dotenv()
 
-APP_NAME = "Gunga Job Radar"
-APP_VERSION = "3.0"
 
-RELIEFWEB_URL = "https://api.reliefweb.int/v1/jobs"
+DATABASE_URL = os.getenv("DATABASE_URL")
 
-RELIEFWEB_QUERY = (
-    "ICT OR IT OR "
-    "\"Information Technology\" OR "
-    "\"Computer\" OR "
-    "\"Software\""
+TELEGRAM_BOT_TOKEN = os.getenv(
+    "TELEGRAM_BOT_TOKEN"
 )
 
-RELIEFWEB_COUNTRY = "Kenya"
+TELEGRAM_CHAT_ID = os.getenv(
+    "TELEGRAM_CHAT_ID"
+)
 
-REQUEST_TIMEOUT = 30
+GMAIL_ADDRESS = os.getenv(
+    "GMAIL_ADDRESS"
+)
 
-TELEGRAM_SCORE = 75
-
-MIN_SAVE_SCORE = 0
-
-MAX_DESCRIPTION_LENGTH = 5000
-
-MAX_JOBS_PER_SCAN = 50
-
-RETRY_COUNT = 3
+GMAIL_APP_PASSWORD = os.getenv(
+    "GMAIL_APP_PASSWORD"
+)
 
 
 # ============================================================
@@ -87,7 +88,26 @@ logging.basicConfig(
     ),
 )
 
-logger = logging.getLogger(APP_NAME)
+logger = logging.getLogger(
+    "Gunga Job Radar"
+)
+
+
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
+HIMALAYAS_API = (
+    "https://himalayas.app/jobs/api/search"
+)
+
+HIMALAYAS_REQUEST_DELAY = 0.75
+
+REQUEST_TIMEOUT = 30
+
+STRONG_MATCH_THRESHOLD = 75
+
+CONSIDER_THRESHOLD = 45
 
 
 # ============================================================
@@ -95,63 +115,63 @@ logger = logging.getLogger(APP_NAME)
 # ============================================================
 
 PROFILE = {
+
     "locations_preferred": [
         "malindi",
         "kilifi",
         "mombasa",
         "nairobi",
-        "remote",
         "kenya",
+        "remote",
+        "worldwide",
+        "africa",
     ],
 
     "target_titles": [
+
         "ict intern",
         "ict assistant",
         "ict officer",
-        "ict technician",
-        "ict support",
 
         "it intern",
         "it support",
         "it technician",
         "it assistant",
-        "it officer",
 
         "help desk",
         "helpdesk",
+
+        "technical support",
+        "support technician",
+
+        "computer technician",
+
+        "network technician",
+        "networking intern",
 
         "junior developer",
         "junior software developer",
         "junior web developer",
 
-        "computer technician",
-
-        "networking intern",
-        "network technician",
-        "network support",
-
         "web developer",
-        "software developer intern",
-        "software development intern",
-
         "frontend developer",
-        "front end developer",
+        "front-end developer",
 
-        "backend developer",
+        "software developer",
+        "software developer intern",
 
-        "system administrator",
-        "systems administrator",
+        "application developer",
 
-        "technical support",
-
-        "data entry",
-        "records assistant",
+        "android developer",
 
         "it attache",
         "ict attache",
+        "ict attachment",
+
     ],
 
     "skills": [
+
         "it support",
         "technical support",
         "help desk",
@@ -159,163 +179,214 @@ PROFILE = {
 
         "hardware",
         "computer hardware",
+
         "troubleshooting",
 
         "networking",
-        "network support",
+        "network",
 
         "html",
         "css",
         "javascript",
+
         "web development",
 
         "react",
+        "react.js",
+
         "typescript",
 
         "node.js",
         "nodejs",
 
         "postgresql",
-        "sql",
+        "postgres",
 
         "kotlin",
         "android",
 
+        "data entry",
+        "records management",
+
         "git",
         "github",
 
-        "database",
-
-        "data entry",
-        "records management",
-        "computer literacy",
     ],
 
     "soft_negatives": [
+
         "bachelor's degree required",
-        "bachelor’s degree required",
-        "degree required",
+        "bachelor degree required",
+        "bachelor's degree",
 
         "master's degree required",
-        "master’s degree required",
-
-        "phd required",
+        "master degree required",
 
         "5+ years",
+        "5 years experience",
         "6+ years",
         "7+ years",
         "8+ years",
         "10+ years",
 
-        "five years",
-        "six years",
-        "seven years",
-        "eight years",
-        "ten years",
+        "senior developer",
+        "senior software developer",
+        "senior engineer",
 
-        "senior",
+        "lead developer",
+        "principal engineer",
+
+        "manager",
+        "director",
 
         "ccna required",
         "huawei hcia required",
-        "hcia required",
+
     ],
 }
+
+
+# ============================================================
+# ENVIRONMENT VALIDATION
+# ============================================================
+
+def require_environment(
+    *names: str,
+) -> None:
+
+    missing = []
+
+    for name in names:
+
+        if not os.getenv(name):
+
+            missing.append(name)
+
+    if missing:
+
+        raise RuntimeError(
+            "Missing required environment variable(s): "
+            + ", ".join(missing)
+        )
 
 
 # ============================================================
 # TEXT HELPERS
 # ============================================================
 
-def clean_text(value: str | None) -> str:
+def clean_text(
+    value: Any,
+) -> str:
 
-    if not value:
+    if value is None:
+
         return ""
 
+    if isinstance(value, list):
+
+        return ", ".join(
+            str(item)
+            for item in value
+        )
+
+    if isinstance(value, dict):
+
+        return " ".join(
+            str(v)
+            for v in value.values()
+        )
+
+    return str(value)
+
+
+def normalize_text(
+    value: Any,
+) -> str:
+
     return " ".join(
-        str(value).split()
-    ).strip()
-
-
-def normalize_text(value: str) -> str:
-
-    value = clean_text(value)
-
-    return (
-        value
+        clean_text(value)
         .lower()
-        .replace("’", "'")
-    )
-
-
-def contains_phrase(
-    text: str,
-    phrase: str,
-) -> bool:
-
-    return normalize_text(
-        phrase
-    ) in normalize_text(
-        text
+        .split()
     )
 
 
 # ============================================================
-# RELIEFWEB COLLECTOR
+# HIMALAYAS COLLECTOR
 # ============================================================
 
-def fetch_reliefweb_jobs(
-    query: str = RELIEFWEB_QUERY,
-    country: str = RELIEFWEB_COUNTRY,
-    limit: int = MAX_JOBS_PER_SCAN,
-) -> list[dict]:
+def fetch_himalayas_jobs() -> list[dict[str, Any]]:
+    """
+    Fetch ICT-related remote jobs from the
+    public Himalayas jobs API.
+    """
 
     logger.info(
-        "Fetching jobs from ReliefWeb..."
+        "Fetching jobs from Himalayas..."
     )
 
-    params = {
-        "appname": "gunga-job-radar",
+    keywords = [
 
-        "query[value]": query,
+        "ICT",
+        "IT support",
+        "IT technician",
+        "help desk",
 
-        "filter[field]": "country",
+        "technical support",
 
-        "filter[value]": country,
+        "web developer",
+        "frontend developer",
+        "software developer",
 
-        "limit": limit,
+        "networking",
 
-        "sort[]": "date.created:desc",
+        "computer technician",
 
-        "fields[include][]": [
-            "title",
-            "body",
-            "url",
-            "date",
-            "source",
-            "country",
-        ],
-    }
+        "JavaScript",
+        "React",
+        "Node.js",
 
-    headers = {
-        "User-Agent": (
-            "GungaJobRadar/3.0 "
-            "(job monitoring application)"
-        )
-    }
+        "Kotlin",
+        "Android",
 
-    last_error = None
+    ]
 
-    for attempt in range(
-        1,
-        RETRY_COUNT + 1,
-    ):
+    jobs: list[
+        dict[str, Any]
+    ] = []
+
+    seen_urls: set[str] = set()
+
+    session = requests.Session()
+
+    session.headers.update({
+
+        "User-Agent":
+            "Gunga-Job-Radar/1.0",
+
+        "Accept":
+            "application/json",
+
+    })
+
+    for keyword in keywords:
+
+        params = {
+
+            "q": keyword,
+
+            "worldwide": "true",
+
+            "sort": "recent",
+
+            "page": 1,
+
+        }
 
         try:
 
-            response = requests.get(
-                RELIEFWEB_URL,
+            response = session.get(
+                HIMALAYAS_API,
                 params=params,
-                headers=headers,
                 timeout=REQUEST_TIMEOUT,
             )
 
@@ -323,111 +394,237 @@ def fetch_reliefweb_jobs(
 
             data = response.json()
 
-            jobs = []
-
-            for item in data.get(
-                "data",
+            raw_jobs = data.get(
+                "jobs",
                 [],
+            )
+
+            if not isinstance(
+                raw_jobs,
+                list,
             ):
 
-                fields = item.get(
-                    "fields",
-                    {},
-                )
+                raw_jobs = []
+
+            for item in raw_jobs:
+
+                if not isinstance(
+                    item,
+                    dict,
+                ):
+
+                    continue
 
                 title = clean_text(
-                    fields.get(
-                        "title"
-                    )
-                )
+                    item.get("title")
+                ).strip()
 
-                source_url = clean_text(
-                    fields.get(
-                        "url"
+                company = clean_text(
+                    item.get(
+                        "companyName"
                     )
-                )
+                ).strip()
 
                 description = clean_text(
-                    fields.get(
-                        "body"
+                    item.get(
+                        "description"
+                    )
+                    or item.get(
+                        "excerpt"
+                    )
+                ).strip()
+
+                application_url = (
+                    clean_text(
+                        item.get(
+                            "applicationLink"
+                        )
+                    ).strip()
+                )
+
+                guid = clean_text(
+                    item.get("guid")
+                ).strip()
+
+                source_url = (
+                    application_url
+                    or (
+                        f"https://himalayas.app/jobs/"
+                        f"{guid}"
+                        if guid
+                        else ""
                     )
                 )
 
-                source_data = (
-                    fields.get(
-                        "source"
+                if not source_url:
+
+                    continue
+
+                if source_url in seen_urls:
+
+                    continue
+
+                seen_urls.add(
+                    source_url
+                )
+
+                restrictions = (
+                    item.get(
+                        "locationRestrictions"
                     )
                     or []
                 )
 
-                company = "Unknown"
-
-                if (
-                    isinstance(
-                        source_data,
-                        list,
-                    )
-                    and source_data
+                if isinstance(
+                    restrictions,
+                    list,
                 ):
 
-                    company = clean_text(
-                        source_data[0].get(
-                            "name",
-                            "Unknown",
-                        )
+                    location = ", ".join(
+                        clean_text(x)
+                        for x in restrictions
+                        if clean_text(x)
                     )
 
-                if not title or not source_url:
-                    continue
+                else:
 
-                jobs.append(
-                    {
-                        "source": "ReliefWeb",
+                    location = clean_text(
+                        restrictions
+                    )
 
-                        "source_url": source_url,
+                if not location:
 
-                        "title": title,
+                    location = (
+                        "Remote / Worldwide"
+                    )
 
-                        "company": company,
-
-                        "location": country,
-
-                        "description": (
-                            description[
-                                :MAX_DESCRIPTION_LENGTH
-                            ]
-                        ),
-                    }
+                employment_type = (
+                    clean_text(
+                        item.get(
+                            "employmentType"
+                        )
+                    )
                 )
 
-            logger.info(
-                "ReliefWeb returned %d jobs.",
-                len(jobs),
-            )
+                categories = (
+                    item.get(
+                        "categories"
+                    )
+                    or item.get(
+                        "category"
+                    )
+                    or []
+                )
 
-            return jobs
+                category_text = (
+                    clean_text(
+                        categories
+                    )
+                )
 
-        except Exception as exc:
+                min_salary = item.get(
+                    "minSalary"
+                )
 
-            last_error = exc
+                max_salary = item.get(
+                    "maxSalary"
+                )
+
+                currency = clean_text(
+                    item.get(
+                        "currency"
+                    )
+                )
+
+                salary = ""
+
+                if (
+                    min_salary is not None
+                    and max_salary is not None
+                ):
+
+                    try:
+
+                        salary = (
+                            f"{currency} "
+                            f"{int(min_salary):,} - "
+                            f"{int(max_salary):,}"
+                        )
+
+                    except (
+                        TypeError,
+                        ValueError,
+                    ):
+
+                        salary = (
+                            f"{currency} "
+                            f"{min_salary} - "
+                            f"{max_salary}"
+                        )
+
+                full_description = "\n".join(
+                    part
+                    for part in [
+                        description,
+                        category_text,
+                        employment_type,
+                        salary,
+                    ]
+                    if part
+                )
+
+                jobs.append({
+
+                    "source":
+                        "Himalayas",
+
+                    "source_url":
+                        source_url,
+
+                    "title":
+                        title
+                        or "Untitled",
+
+                    "company":
+                        company
+                        or "Unknown",
+
+                    "location":
+                        location,
+
+                    "description":
+                        full_description,
+
+                })
+
+        except requests.RequestException as exc:
 
             logger.warning(
-                "ReliefWeb attempt %d/%d failed: %s",
-                attempt,
-                RETRY_COUNT,
+                "Himalayas request failed "
+                "for '%s': %s",
+                keyword,
                 exc,
             )
 
-            if attempt < RETRY_COUNT:
+        except ValueError as exc:
 
-                time.sleep(
-                    2 ** attempt
-                )
+            logger.warning(
+                "Invalid JSON returned by "
+                "Himalayas for '%s': %s",
+                keyword,
+                exc,
+            )
 
-    raise RuntimeError(
-        f"Could not fetch ReliefWeb jobs: "
-        f"{last_error}"
+        time.sleep(
+            HIMALAYAS_REQUEST_DELAY
+        )
+
+    logger.info(
+        "Himalayas returned %d unique jobs",
+        len(jobs),
     )
+
+    return jobs
 
 
 # ============================================================
@@ -435,51 +632,58 @@ def fetch_reliefweb_jobs(
 # ============================================================
 
 def score_job(
-    job: dict,
-    profile: dict = PROFILE,
+    job: dict[str, Any],
 ) -> tuple[
     int,
     str,
     list[str],
     list[str],
     list[str],
+    list[str],
 ]:
 
     title = normalize_text(
-        job["title"]
+        job.get("title")
     )
 
-    full_text = normalize_text(
-        " ".join(
-            [
-                job["title"],
-                job["description"],
-                job["location"],
-            ]
-        )
+    location = normalize_text(
+        job.get("location")
     )
+
+    description = normalize_text(
+        job.get("description")
+    )
+
+    combined = " ".join([
+        title,
+        location,
+        description,
+    ])
 
     score = 0
 
-    reasons = []
+    reasons: list[str] = []
 
-    blockers = []
+    blockers: list[str] = []
 
-    matched_skills = []
+    matched_skills: list[str] = []
+
+    matched_locations: list[str] = []
 
     # --------------------------------------------------------
     # TITLE
     # --------------------------------------------------------
 
     title_matches = [
-        target
-        for target in profile[
+
+        role
+        for role
+        in PROFILE[
             "target_titles"
         ]
-        if contains_phrase(
-            title,
-            target,
-        )
+
+        if role in title
+
     ]
 
     if title_matches:
@@ -487,72 +691,45 @@ def score_job(
         score += 35
 
         reasons.append(
-            "Title matches target role"
+            "Title matches a target ICT role"
         )
 
     # --------------------------------------------------------
     # LOCATION
     # --------------------------------------------------------
 
-    location_matches = [
-        location
-        for location in profile[
-            "locations_preferred"
-        ]
-        if contains_phrase(
-            full_text,
-            location,
+    for location_name in PROFILE[
+        "locations_preferred"
+    ]:
+
+        if location_name in location:
+
+            matched_locations.append(
+                location_name
+            )
+
+    if matched_locations:
+
+        score += 20
+
+        reasons.append(
+            "Preferred location or "
+            "remote option matched"
         )
-    ]
-
-    if location_matches:
-
-        if any(
-            location in {
-                "malindi",
-                "kilifi",
-                "mombasa",
-            }
-            for location
-            in location_matches
-        ):
-
-            score += 20
-
-            reasons.append(
-                "Preferred Coast location"
-            )
-
-        elif "remote" in location_matches:
-
-            score += 20
-
-            reasons.append(
-                "Remote opportunity"
-            )
-
-        else:
-
-            score += 10
-
-            reasons.append(
-                "Preferred location mentioned"
-            )
 
     # --------------------------------------------------------
     # SKILLS
     # --------------------------------------------------------
 
-    matched_skills = [
-        skill
-        for skill in profile[
-            "skills"
-        ]
-        if contains_phrase(
-            full_text,
-            skill,
-        )
-    ]
+    for skill in PROFILE[
+        "skills"
+    ]:
+
+        if skill in combined:
+
+            matched_skills.append(
+                skill
+            )
 
     skill_points = min(
         len(matched_skills) * 6,
@@ -564,63 +741,74 @@ def score_job(
     if matched_skills:
 
         reasons.append(
-            "Skills matched: "
+            "Matching skills: "
             + ", ".join(
-                matched_skills[:5]
+                matched_skills[:6]
             )
         )
 
     # --------------------------------------------------------
-    # ENTRY LEVEL / EDUCATION
+    # EDUCATION / EXPERIENCE
     # --------------------------------------------------------
 
-    friendly_terms = [
+    entry_level_terms = [
+
         "diploma",
+
         "entry level",
+
         "entry-level",
+
         "intern",
+
         "internship",
+
         "trainee",
+
+        "junior",
+
+        "graduate",
+
         "attachment",
-        "fresh graduate",
+
+        "no experience",
+
     ]
 
-    if any(
-        contains_phrase(
-            full_text,
-            term,
-        )
-        for term in friendly_terms
-    ):
+    entry_matches = [
+
+        term
+        for term in entry_level_terms
+        if term in combined
+
+    ]
+
+    if entry_matches:
 
         score += 15
 
         reasons.append(
-            "Entry-level/diploma friendly"
+            "Entry-level / diploma-friendly "
+            "language detected"
         )
 
     # --------------------------------------------------------
     # NEGATIVES
     # --------------------------------------------------------
 
-    for negative in profile[
+    for blocker in PROFILE[
         "soft_negatives"
     ]:
 
-        if contains_phrase(
-            full_text,
-            negative,
-        ):
+        if blocker in combined:
 
             blockers.append(
-                negative
+                blocker
             )
 
-            score -= 15
-
-    # --------------------------------------------------------
-    # SCORE LIMIT
-    # --------------------------------------------------------
+    score -= (
+        len(blockers) * 15
+    )
 
     score = max(
         0,
@@ -630,15 +818,11 @@ def score_job(
         ),
     )
 
-    # --------------------------------------------------------
-    # TIER
-    # --------------------------------------------------------
-
-    if score >= 75:
+    if score >= STRONG_MATCH_THRESHOLD:
 
         tier = "strong"
 
-    elif score >= 45:
+    elif score >= CONSIDER_THRESHOLD:
 
         tier = "consider"
 
@@ -652,7 +836,79 @@ def score_job(
         reasons,
         blockers,
         matched_skills,
+        matched_locations,
     )
+
+
+# ============================================================
+# DATABASE
+# ============================================================
+
+def build_database() -> Database:
+
+    require_environment(
+        "DATABASE_URL"
+    )
+
+    return Database(
+        DATABASE_URL
+    )
+
+
+def save_job(
+    database: Database,
+    job: dict[str, Any],
+    score: int,
+    tier: str,
+    reasons: list[str],
+    blockers: list[str],
+    matched_skills: list[str],
+    matched_locations: list[str],
+) -> int | None:
+
+    payload = {
+
+        "source":
+            job["source"],
+
+        "source_url":
+            job["source_url"],
+
+        "title":
+            job["title"],
+
+        "company":
+            job["company"],
+
+        "location":
+            job["location"],
+
+        "description":
+            job["description"][:10000],
+
+        "score":
+            score,
+
+        "tier":
+            tier,
+
+        "reasons":
+            "; ".join(
+                reasons
+            ),
+
+        "blockers":
+            "; ".join(
+                blockers
+            ),
+
+    }
+
+    job_id = database.insert_job(
+        payload
+    )
+
+    return job_id
 
 
 # ============================================================
@@ -660,31 +916,20 @@ def score_job(
 # ============================================================
 
 def send_telegram_alert(
-    job: dict,
+    job: dict[str, Any],
     score: int,
     reasons: list[str],
 ) -> bool:
 
-    token = os.getenv(
-        "TELEGRAM_BOT_TOKEN"
+    require_environment(
+        "TELEGRAM_BOT_TOKEN",
+        "TELEGRAM_CHAT_ID",
     )
-
-    chat_id = os.getenv(
-        "TELEGRAM_CHAT_ID"
-    )
-
-    if not token or not chat_id:
-
-        logger.warning(
-            "Telegram credentials not configured."
-        )
-
-        return False
 
     message = (
-        f"🔔 NEW STRONG MATCH\n\n"
+        "🔔 NEW STRONG MATCH\n\n"
 
-        f"🔥 Match: {score}%\n"
+        f"🎯 Match score: {score}%\n"
 
         f"💼 {job['title']}\n"
 
@@ -692,57 +937,58 @@ def send_telegram_alert(
 
         f"📍 {job['location']}\n\n"
 
-        f"✅ "
-        f"{' | '.join(reasons[:4])}\n\n"
+        "Why it matches:\n"
+
+        + (
+            "\n".join(
+                f"• {reason}"
+                for reason in reasons
+            )
+            if reasons
+            else "• Good overall fit"
+        )
+
+        + "\n\n"
 
         f"🔗 {job['source_url']}"
     )
 
-    url = (
-        "https://api.telegram.org/"
-        f"bot{token}/sendMessage"
+    telegram_url = (
+        "https://api.telegram.org/bot"
+        f"{TELEGRAM_BOT_TOKEN}"
+        "/sendMessage"
     )
 
-    for attempt in range(
-        1,
-        RETRY_COUNT + 1,
+    response = requests.post(
+        telegram_url,
+        data={
+            "chat_id":
+                TELEGRAM_CHAT_ID,
+
+            "text":
+                message,
+
+            "disable_web_page_preview":
+                False,
+        },
+        timeout=30,
+    )
+
+    response.raise_for_status()
+
+    result = response.json()
+
+    if not result.get(
+        "ok",
+        False,
     ):
 
-        try:
+        raise RuntimeError(
+            "Telegram rejected message: "
+            f"{result}"
+        )
 
-            response = requests.post(
-                url,
-                data={
-                    "chat_id": chat_id,
-                    "text": message,
-                },
-                timeout=REQUEST_TIMEOUT,
-            )
-
-            response.raise_for_status()
-
-            logger.info(
-                "Telegram alert sent."
-            )
-
-            return True
-
-        except Exception as exc:
-
-            logger.warning(
-                "Telegram attempt %d/%d failed: %s",
-                attempt,
-                RETRY_COUNT,
-                exc,
-            )
-
-            if attempt < RETRY_COUNT:
-
-                time.sleep(
-                    2 ** attempt
-                )
-
-    return False
+    return True
 
 
 # ============================================================
@@ -750,32 +996,22 @@ def send_telegram_alert(
 # ============================================================
 
 def send_gmail_digest(
-    jobs: list[dict],
+    jobs: list[dict[str, Any]],
 ) -> bool:
 
     if not jobs:
 
         logger.info(
-            "No undigested jobs."
-        )
-
-        return True
-
-    address = os.getenv(
-        "GMAIL_ADDRESS"
-    )
-
-    password = os.getenv(
-        "GMAIL_APP_PASSWORD"
-    )
-
-    if not address or not password:
-
-        logger.error(
-            "Gmail credentials are missing."
+            "No undigested jobs. "
+            "Skipping Gmail digest."
         )
 
         return False
+
+    require_environment(
+        "GMAIL_ADDRESS",
+        "GMAIL_APP_PASSWORD",
+    )
 
     strong = [
         job
@@ -796,77 +1032,95 @@ def send_gmail_digest(
     ]
 
     lines = [
+
         "GUNGA JOB RADAR",
+
         "",
+
         (
             f"{len(jobs)} new jobs "
             "since the last digest."
         ),
+
         "",
-        f"🔥 Strong: {len(strong)}",
-        f"🟡 Consider: {len(consider)}",
-        f"🔴 Poor: {len(poor)}",
+
+        f"🟢 Strong matches: {len(strong)}",
+
+        f"🟡 Worth considering: {len(consider)}",
+
+        f"🔴 Poor matches: {len(poor)}",
+
+        "",
+
     ]
 
-    for heading, group in [
+    groups = [
+
         (
-            "🔥 STRONG MATCHES",
+            "🟢 STRONG MATCHES",
             strong,
         ),
+
         (
             "🟡 WORTH CONSIDERING",
             consider,
         ),
-    ]:
+
+    ]
+
+    for heading, group in groups:
 
         if not group:
+
             continue
 
-        lines.extend(
-            [
-                "",
-                "",
-                heading,
-                "-" * 45,
-            ]
-        )
+        lines.extend([
+
+            "",
+
+            "=" * 50,
+
+            heading,
+
+            "=" * 50,
+
+        ])
 
         for job in sorted(
             group,
-            key=lambda item: (
-                -item["score"]
+            key=lambda x: (
+                -int(
+                    x["score"]
+                    or 0
+                )
             ),
         ):
 
-            lines.extend(
-                [
-                    "",
-                    (
-                        f"{job['score']}% — "
-                        f"{job['title']}"
-                    ),
-                    (
-                        f"Company: "
-                        f"{job['company']}"
-                    ),
-                    (
-                        f"Location: "
-                        f"{job['location']}"
-                    ),
-                    (
-                        f"Apply: "
-                        f"{job['source_url']}"
-                    ),
-                ]
-            )
+            lines.extend([
 
-    lines.extend(
-        [
-            "",
-            "",
-            "Generated by Gunga Job Radar.",
-        ]
-    )
+                "",
+
+                (
+                    f"{job['score']}% — "
+                    f"{job['title']}"
+                ),
+
+                (
+                    f"Company: "
+                    f"{job['company']}"
+                ),
+
+                (
+                    f"Location: "
+                    f"{job['location']}"
+                ),
+
+                (
+                    f"Apply: "
+                    f"{job['source_url']}"
+                ),
+
+            ])
 
     body = "\n".join(
         lines
@@ -874,9 +1128,13 @@ def send_gmail_digest(
 
     message = MIMEMultipart()
 
-    message["From"] = address
+    message["From"] = (
+        GMAIL_ADDRESS
+    )
 
-    message["To"] = address
+    message["To"] = (
+        GMAIL_ADDRESS
+    )
 
     message["Subject"] = (
         "Gunga Job Radar — "
@@ -891,52 +1149,28 @@ def send_gmail_digest(
         )
     )
 
-    for attempt in range(
-        1,
-        RETRY_COUNT + 1,
-    ):
+    with smtplib.SMTP(
+        "smtp.gmail.com",
+        587,
+        timeout=30,
+    ) as server:
 
-        try:
+        server.starttls()
 
-            with smtplib.SMTP(
-                "smtp.gmail.com",
-                587,
-                timeout=REQUEST_TIMEOUT,
-            ) as server:
+        server.login(
+            GMAIL_ADDRESS,
+            GMAIL_APP_PASSWORD,
+        )
 
-                server.starttls()
+        server.send_message(
+            message
+        )
 
-                server.login(
-                    address,
-                    password,
-                )
+    logger.info(
+        "Gmail digest sent successfully."
+    )
 
-                server.send_message(
-                    message
-                )
-
-            logger.info(
-                "Gmail digest sent."
-            )
-
-            return True
-
-        except Exception as exc:
-
-            logger.warning(
-                "Gmail attempt %d/%d failed: %s",
-                attempt,
-                RETRY_COUNT,
-                exc,
-            )
-
-            if attempt < RETRY_COUNT:
-
-                time.sleep(
-                    2 ** attempt
-                )
-
-    return False
+    return True
 
 
 # ============================================================
@@ -945,158 +1179,135 @@ def send_gmail_digest(
 
 def run_scan(
     database: Database,
-):
+) -> None:
 
     logger.info(
         "========== SCAN START =========="
     )
 
-    jobs = fetch_reliefweb_jobs()
+    jobs = fetch_himalayas_jobs()
 
-    fetched = len(jobs)
+    logger.info(
+        "Processing %d jobs...",
+        len(jobs),
+    )
 
     new_jobs = 0
 
-    saved_jobs = 0
-
-    strong_jobs = 0
-
-    telegram_sent = 0
+    strong_matches = 0
 
     for job in jobs:
 
-        source_url = job[
+        source_url = job.get(
             "source_url"
-        ]
+        )
 
         if not source_url:
 
             continue
 
-        if database.job_exists(
-            source_url
-        ):
+        try:
 
-            continue
+            if database.job_exists(
+                source_url
+            ):
 
-        (
-            score,
-            tier,
-            reasons,
-            blockers,
-            matched_skills,
-        ) = score_job(job)
+                continue
 
-        new_jobs += 1
-
-        logger.info(
-            "%3d%% | %-8s | %s",
-            score,
-            tier,
-            job["title"],
-        )
-
-        payload = {
-            "source": job["source"],
-
-            "source_url": source_url,
-
-            "title": job["title"],
-
-            "company": job["company"],
-
-            "location": job["location"],
-
-            "description": job[
-                "description"
-            ],
-
-            "score": score,
-
-            "tier": tier,
-
-            "reasons": "; ".join(
-                reasons
-            ),
-
-            "blockers": "; ".join(
-                blockers
-            ),
-        }
-
-        job_id = database.insert_job(
-            payload
-        )
-
-        if job_id is None:
-
-            continue
-
-        saved_jobs += 1
-
-        if tier == "strong":
-
-            strong_jobs += 1
-
-            notification_id = (
-                database.create_notification(
-                    job_id,
-                    "telegram",
-                )
+            (
+                score,
+                tier,
+                reasons,
+                blockers,
+                matched_skills,
+                matched_locations,
+            ) = score_job(
+                job
             )
 
-            sent = send_telegram_alert(
+            job_id = save_job(
+                database,
                 job,
                 score,
+                tier,
                 reasons,
+                blockers,
+                matched_skills,
+                matched_locations,
             )
 
-            if sent:
+            if job_id is None:
 
-                database.mark_notification_sent(
-                    notification_id
-                )
+                continue
 
-                database.mark_telegram_sent(
-                    job_id
-                )
+            new_jobs += 1
 
-                telegram_sent += 1
+            logger.info(
+                "NEW JOB | %s | %s%% | %s",
+                job["title"],
+                score,
+                tier,
+            )
 
-            else:
+            if tier == "strong":
 
-                database.mark_notification_failed(
-                    notification_id,
-                    "Telegram delivery failed",
-                )
+                strong_matches += 1
+
+                try:
+
+                    send_telegram_alert(
+                        job,
+                        score,
+                        reasons,
+                    )
+
+                    database.mark_telegram_sent(
+                        job_id
+                    )
+
+                    logger.info(
+                        "Telegram alert sent "
+                        "for job %s",
+                        job_id,
+                    )
+
+                except Exception as exc:
+
+                    logger.error(
+                        "Telegram alert failed "
+                        "for job %s: %s",
+                        job_id,
+                        exc,
+                    )
+
+        except DatabaseError as exc:
+
+            logger.error(
+                "Database error processing "
+                "%s: %s",
+                source_url,
+                exc,
+            )
+
+        except Exception as exc:
+
+            logger.exception(
+                "Unexpected error processing job: %s",
+                exc,
+            )
 
     logger.info(
-        "Fetched: %d",
-        fetched,
-    )
-
-    logger.info(
-        "New: %d",
+        "New jobs saved: %d",
         new_jobs,
     )
 
     logger.info(
-        "Saved: %d",
-        saved_jobs,
+        "Strong matches: %d",
+        strong_matches,
     )
 
     logger.info(
-        "Strong: %d",
-        strong_jobs,
-    )
-
-    logger.info(
-        "Telegram sent: %d",
-        telegram_sent,
-    )
-
-    logger.info(
-        "=========== SCAN END ==========="
+        "========== SCAN COMPLETE =========="
     )
 
 
@@ -1106,49 +1317,68 @@ def run_scan(
 
 def run_digest(
     database: Database,
-):
+) -> None:
 
     logger.info(
-        "========= DIGEST START ========="
+        "========== DIGEST START =========="
     )
 
     jobs = database.get_undigested_jobs()
 
     logger.info(
-        "%d jobs pending digest.",
+        "%d jobs pending digest",
         len(jobs),
     )
 
     if not jobs:
 
-        return
+        logger.info(
+            "Nothing to send."
+        )
 
-    sent = send_gmail_digest(
-        jobs
-    )
-
-    if not sent:
-
-        logger.error(
-            "Digest failed. "
-            "Jobs will remain undigested."
+        logger.info(
+            "========== DIGEST COMPLETE =========="
         )
 
         return
 
-    database.mark_jobs_digested(
-        [
-            job["id"]
+    try:
+
+        send_gmail_digest(
+            jobs
+        )
+
+        job_ids = [
+
+            int(job["id"])
+
             for job in jobs
+
+            if job.get("id") is not None
+
         ]
-    )
+
+        database.mark_jobs_digested(
+            job_ids
+        )
+
+        logger.info(
+            "Marked %d jobs as digested.",
+            len(job_ids),
+        )
+
+    except Exception as exc:
+
+        logger.exception(
+            "Digest failed. "
+            "Jobs were NOT marked as digested: %s",
+            exc,
+        )
+
+        raise
 
     logger.info(
-        "Digest completed."
-    )
-
-    logger.info(
-        "========== DIGEST END =========="
+        "========== DIGEST COMPLETE =========="
     )
 
 
@@ -1156,39 +1386,41 @@ def run_digest(
 # MAIN
 # ============================================================
 
-def main():
+def main() -> int:
 
     parser = argparse.ArgumentParser(
-        description=APP_NAME
+        description=(
+            "Gunga Job Radar"
+        )
     )
 
     parser.add_argument(
+
         "--mode",
+
         choices=[
             "scan",
             "digest",
             "both",
         ],
+
         default="both",
+
+        help=(
+            "Operation to run."
+        ),
+
     )
 
     args = parser.parse_args()
 
-    database_url = os.getenv(
-        "DATABASE_URL"
+    logger.info(
+        "Starting Gunga Job Radar "
+        "in %s mode...",
+        args.mode,
     )
 
-    if not database_url:
-
-        logger.error(
-            "DATABASE_URL is missing."
-        )
-
-        return 1
-
-    database = Database(
-        database_url
-    )
+    database = build_database()
 
     try:
 
@@ -1210,14 +1442,6 @@ def main():
                 database
             )
 
-    except KeyboardInterrupt:
-
-        logger.info(
-            "Stopped by user."
-        )
-
-        return 130
-
     except Exception as exc:
 
         logger.exception(
@@ -1227,10 +1451,19 @@ def main():
 
         return 1
 
+    logger.info(
+        "Gunga Job Radar finished successfully."
+    )
+
     return 0
 
 
+# ============================================================
+# ENTRY POINT
+# ============================================================
+
 if __name__ == "__main__":
+
     raise SystemExit(
         main()
 )
