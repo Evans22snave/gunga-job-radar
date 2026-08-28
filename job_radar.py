@@ -1,40 +1,416 @@
 """
-Gunga Job Radar — Phase 1 starter script
+Gunga Job Radar
+Phase 3 — upgraded job collection, matching, storage and notifications.
 
-What this does, end to end:
-1. Fetches recent Kenyan job postings from MyJobMag's public RSS feed (no key needed).
-2. Scores each job against Evans's candidate profile (rule-based, Section 7 of the spec).
-3. Stores jobs + scores in Supabase Postgres, skipping ones already seen (dedupe).
-4. Sends an instant Telegram alert for any NEW strong match (score >= 75).
-5. Sends a Gmail digest covering everything scored since the last digest.
+Modes:
+    python job_radar.py --mode scan
+    python job_radar.py --mode digest
+    python job_radar.py --mode both
 
-Two modes, meant to run on different schedules (see the GitHub Actions workflow):
-    python job_radar.py --mode scan    # fetch + score + save + Telegram alerts (run often)
-    python job_radar.py --mode digest  # email everything not yet digested (run once/day)
-    python job_radar.py --mode both    # do both in one go (useful for local testing)
+Required environment variables:
+    DATABASE_URL
 
-Environment variables required (put these in a .env file next to this script,
-or set them as GitHub Actions secrets later):
+For Telegram alerts:
     TELEGRAM_BOT_TOKEN
     TELEGRAM_CHAT_ID
+
+For Gmail digest:
     GMAIL_ADDRESS
     GMAIL_APP_PASSWORD
-    DATABASE_URL
 """
 
+from __future__ import annotations
+
+import argparse
+import html
+import logging
 import os
 import re
-import argparse
 import smtplib
-import requests
-import psycopg2
+import sys
+import time
 import xml.etree.ElementTree as ET
-from email.mime.text import MIMEText
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from typing import Iterable
+
+import psycopg2
+import requests
 from dotenv import load_dotenv
+
+
+# ============================================================
+# CONFIGURATION
+# ============================================================
 
 load_dotenv()
 
+APP_NAME = "Gunga Job Radar"
+APP_VERSION = "3.0"
+
+MYJOBMAG_FEED_URL = "https://www.myjobmag.co.ke/feeds/jobsxml.xml"
+
+REQUEST_TIMEOUT = 25
+MAX_JOBS_PER_SOURCE = 100
+
+MIN_SAVE_SCORE = 20
+TELEGRAM_SCORE = 75
+
+MAX_DESCRIPTION_LENGTH = 5000
+
+TELEGRAM_RETRIES = 3
+EMAIL_RETRIES = 3
+
+
+# ============================================================
+# LOGGING
+# ============================================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+)
+
+logger = logging.getLogger(APP_NAME)
+
+
+# ============================================================
+# CANDIDATE PROFILE
+# ============================================================
+
+PROFILE = {
+    "preferred_locations": [
+        "malindi",
+        "kilifi",
+        "mombasa",
+        "nairobi",
+        "remote",
+        "kenya",
+    ],
+
+    "target_titles": [
+        "ict intern",
+        "ict assistant",
+        "ict officer",
+        "ict technician",
+        "ict support",
+        "it intern",
+        "it support",
+        "it technician",
+        "it assistant",
+        "it officer",
+        "help desk",
+        "helpdesk",
+        "technical support",
+        "support technician",
+        "computer technician",
+        "junior developer",
+        "junior software developer",
+        "junior web developer",
+        "web developer",
+        "software developer intern",
+        "software development intern",
+        "frontend developer",
+        "front end developer",
+        "backend developer",
+        "networking intern",
+        "network technician",
+        "network support",
+        "system administrator",
+        "systems administrator",
+        "data entry",
+        "records assistant",
+        "it attache",
+        "ict attache",
+    ],
+
+    "skills": [
+        "it support",
+        "technical support",
+        "help desk",
+        "helpdesk",
+        "hardware",
+        "computer hardware",
+        "troubleshooting",
+        "networking",
+        "network support",
+        "tcp/ip",
+        "html",
+        "css",
+        "javascript",
+        "web development",
+        "react",
+        "typescript",
+        "node.js",
+        "nodejs",
+        "postgresql",
+        "sql",
+        "kotlin",
+        "android",
+        "git",
+        "github",
+        "database",
+        "data entry",
+        "records management",
+        "computer literacy",
+    ],
+
+    "education_signals": [
+        "diploma",
+        "certificate",
+        "kcse",
+        "entry level",
+        "entry-level",
+        "intern",
+        "internship",
+        "trainee",
+        "graduate trainee",
+        "fresh graduate",
+        "no experience",
+        "without experience",
+    ],
+
+    "experience_penalties": [
+        "5+ years",
+        "6+ years",
+        "7+ years",
+        "8+ years",
+        "10+ years",
+        "five years",
+        "six years",
+        "seven years",
+        "eight years",
+        "ten years",
+        "senior developer",
+        "senior software engineer",
+        "senior engineer",
+        "senior manager",
+        "head of",
+        "director",
+    ],
+
+    "hard_requirement_penalties": [
+        "bachelor's degree required",
+        "bachelor’s degree required",
+        "degree required",
+        "master's degree required",
+        "master’s degree required",
+        "phd required",
+        "ccna required",
+        "hcia required",
+    ],
+}
+
+
+# ============================================================
+# DATA MODEL
+# ============================================================
+
+@dataclass
+class Job:
+    source: str
+    source_url: str
+    title: str
+    company: str
+    location: str
+    description: str
+
+
+@dataclass
+class MatchResult:
+    score: int
+    tier: str
+    reasons: list[str]
+    blockers: list[str]
+    matched_skills: list[str]
+    matched_locations: list[str]
+
+
+# ============================================================
+# ENVIRONMENT
+# ============================================================
+
+def require_env(*names: str) -> None:
+    missing = [name for name in names if not os.getenv(name)]
+
+    if missing:
+        raise RuntimeError(
+            "Missing required environment variable(s): "
+            + ", ".join(missing)
+        )
+
+
+# ============================================================
+# TEXT HELPERS
+# ============================================================
+
+def clean_text(value: str | None) -> str:
+    if not value:
+        return ""
+
+    value = html.unescape(value)
+
+    # Remove HTML tags.
+    value = re.sub(r"<[^>]+>", " ", value)
+
+    # Normalize whitespace.
+    value = re.sub(r"\s+", " ", value)
+
+    return value.strip()
+
+
+def normalize_for_matching(value: str) -> str:
+    value = clean_text(value).lower()
+
+    # Normalize curly apostrophes.
+    value = value.replace("’", "'")
+
+    # Normalize common separators.
+    value = value.replace("/", " ")
+    value = value.replace("-", " ")
+
+    return value
+
+
+def contains_phrase(text: str, phrase: str) -> bool:
+    """
+    Safer phrase matching.
+
+    Prevents things like:
+        "react" matching "reaction"
+    """
+    text = normalize_for_matching(text)
+    phrase = normalize_for_matching(phrase)
+
+    pattern = r"(?<!\w)" + re.escape(phrase) + r"(?!\w)"
+
+    return re.search(pattern, text) is not None
+
+
+def truncate(text: str, length: int) -> str:
+    text = text or ""
+
+    if len(text) <= length:
+        return text
+
+    return text[:length].rstrip() + "..."
+
+
+# ============================================================
+# LOCATION EXTRACTION
+# ============================================================
+
+LOCATION_ALIASES = {
+    "malindi": ["malindi"],
+    "kilifi": ["kilifi"],
+    "mombasa": ["mombasa"],
+    "nairobi": ["nairobi"],
+    "remote": [
+        "remote",
+        "work from home",
+        "work-from-home",
+        "fully remote",
+        "remote work",
+    ],
+    "kenya": ["kenya", "nationwide", "all counties"],
+}
+
+
+def extract_locations(title: str, description: str) -> list[str]:
+    text = f"{title} {description}"
+
+    found = []
+
+    for canonical, aliases in LOCATION_ALIASES.items():
+        for alias in aliases:
+            if contains_phrase(text, alias):
+                found.append(canonical)
+                break
+
+    return list(dict.fromkeys(found))
+
+
+def extract_location(title: str, description: str) -> str:
+    locations = extract_locations(title, description)
+
+    if not locations:
+        return "Kenya"
+
+    # Prefer specific locations over generic Kenya.
+    priority = [
+        "malindi",
+        "kilifi",
+        "mombasa",
+        "nairobi",
+        "remote",
+        "kenya",
+    ]
+
+    for location in priority:
+        if location in locations:
+            return location.title()
+
+    return locations[0].title()
+
+
+# ============================================================
+# COMPANY EXTRACTION
+# ============================================================
+
+def extract_company(title: str, description: str = "") -> str:
+    """
+    MyJobMag commonly uses:
+        "Job Title at Company"
+
+    We also handle:
+        "Job Title - Company"
+        "Job Title | Company"
+    """
+
+    patterns = [
+        r"\bat\s+(.+)$",
+        r"\s[-|]\s(.+)$",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, title, re.IGNORECASE)
+
+        if match:
+            company = clean_text(match.group(1))
+
+            if company:
+                return company
+
+    # Try simple company labels in descriptions.
+    match = re.search(
+        r"(?:company|employer|organization)\s*:\s*([^.;]+)",
+        description,
+        re.IGNORECASE,
+    )
+
+    if match:
+        return clean_text(match.group(1))
+
+    return "Unknown"
+
+
+# ============================================================
+# MYJOBMAG COLLECTOR
+# ============================================================
+
+def fetch_myjobmag_jobs(
+    limit: int = MAX_JOBS_PER_SOURCE,
+) -> list[Job]:
+
+    logger.info("Fetching MyJobMag jobs...")
+
+    headers = {
+        "User-Agent": (
+            "GungaJobRadar/3.0 "
+            "(personal job alert tool
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 GMAIL_ADDRESS = os.environ.get("GMAIL_ADDRESS")
