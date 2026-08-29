@@ -1,321 +1,212 @@
-"""
-Diagnostic utilities for Gunga Job Radar.
-
-Inspect database state, scoring decisions, and job processing.
-"""
+# Gunga Job Radar — Diagnostics
+# Run with: python diagnostics.py
+#
+# This module is intentionally dependency-light. It helps diagnose
+# configuration, database, Telegram, and scan-mode problems without
+# running the full radar.
 
 from __future__ import annotations
 
-import json
-import logging
 import os
+import sqlite3
+import sys
+from pathlib import Path
 from typing import Any
 
-from dotenv import load_dotenv
-from psycopg2.extras import RealDictCursor
-
-from database.db import Database
-
-logger = logging.getLogger("Gunga Job Radar Diagnostics")
-
-
-def inspect_jobs(
-    database: Database,
-    limit: int = 20,
-) -> None:
-    """Inspect recent jobs in the database."""
-
-    logger.info("")
-    logger.info("========== JOBS IN DATABASE ==========")
-
-    with database.connection() as conn:
-
-        with conn.cursor(
-            cursor_factory=RealDictCursor
-        ) as cur:
-
-            cur.execute(
-                """
-                SELECT
-                    id,
-                    title,
-                    company,
-                    location,
-                    score,
-                    tier,
-                    telegram_sent,
-                    digested,
-                    created_at
-                FROM jobs
-                ORDER BY created_at DESC
-                LIMIT %s
-                """,
-                (limit,),
-            )
-
-            rows = cur.fetchall()
-
-    if not rows:
-        logger.info("No jobs in database.")
-        return
 
-    logger.info(f"Total: {len(rows)} recent jobs")
-    logger.info("")
+ROOT = Path(__file__).resolve().parent
+DB_PATH = Path(os.getenv("JOB_RADAR_DB_PATH", ROOT / "jobs.db"))
+
+
+def mask_secret(value: str | None, visible: int = 4) -> str:
+    """Mask secrets while keeping a small visible prefix."""
+    if not value:
+        return "(not set)"
+    if len(value) <= visible:
+        return "*" * len(value)
+    return value[:visible] + "*" * max(4, len(value) - visible)
+
+
+def env_status() -> dict[str, str]:
+    """Return the status of important environment variables."""
+    names = [
+        "TELEGRAM_BOT_TOKEN",
+        "TELEGRAM_CHAT_ID",
+        "JOB_RADAR_DB_PATH",
+        "DATABASE_URL",
+        "SCAN_MODE",
+    ]
+
+    result: dict[str, str] = {}
+
+    for name in names:
+        value = os.getenv(name)
+
+        if name in {"TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"}:
+            result[name] = mask_secret(value)
+        else:
+            result[name] = value if value else "(not set)"
+
+    return result
+
+
+def check_database() -> dict[str, Any]:
+    """Check whether the SQLite database exists and can be opened."""
+    result: dict[str, Any] = {
+        "path": str(DB_PATH),
+        "exists": DB_PATH.exists(),
+        "size": DB_PATH.stat().st_size if DB_PATH.exists() else 0,
+        "ok": False,
+        "tables": [],
+        "error": None,
+    }
+
+    if not DB_PATH.exists():
+        result["error"] = "Database file does not exist."
+        return result
+
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        try:
+            rows = conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' ORDER BY name"
+            ).fetchall()
+
+            result["tables"] = [row[0] for row in rows]
+            result["ok"] = True
+        finally:
+            conn.close()
+
+    except Exception as exc:
+        result["error"] = f"{type(exc).__name__}: {exc}"
+
+    return result
+
+
+def check_database_counts() -> dict[str, Any]:
+    """Return useful row counts from common Job Radar tables."""
+    result: dict[str, Any] = {
+        "ok": False,
+        "counts": {},
+        "error": None,
+    }
+
+    if not DB_PATH.exists():
+        result["error"] = "Database file does not exist."
+        return result
+
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        conn.row_factory = sqlite3.Row
+
+        try:
+            tables = {
+                row["name"]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+
+            for table in (
+                "jobs",
+                "job_posts",
+                "sources",
+                "scan_runs",
+                "notifications",
+            ):
+                if table in tables:
+                    try:
+                        count = conn.execute(
+                            f"SELECT COUNT(*) FROM {table}"
+                        ).fetchone()[0]
+                        result["counts"][table] = count
+                    except Exception as exc:
+                        result["counts"][table] = (
+                            f"error: {type(exc).__name__}: {exc}"
+                        )
 
-    for job in rows:
+            result["ok"] = True
 
-        logger.info(
-            f"ID: {job['id']} | "
-            f"Score: {job['score']}% | "
-            f"Tier: {job['tier']}"
-        )
+        finally:
+            conn.close()
 
-        logger.info(
-            f"  Title: {job['title']}"
-        )
+    except Exception as exc:
+        result["error"] = f"{type(exc).__name__}: {exc}"
 
-        logger.info(
-            f"  Company: {job['company']}"
-        )
+    return result
 
-        logger.info(
-            f"  Location: {job['location']}"
-        )
 
-        logger.info(
-            f"  Telegram sent: {job['telegram_sent']} | "
-            f"Digested: {job['digested']}"
-        )
+def check_python() -> dict[str, Any]:
+    """Return Python runtime information."""
+    return {
+        "version": sys.version,
+        "executable": sys.executable,
+        "platform": sys.platform,
+    }
 
-        logger.info(
-            f"  Created: {job['created_at']}"
-        )
 
-        logger.info("")
+def print_section(title: str) -> None:
+    print()
+    print("=" * 70)
+    print(title)
+    print("=" * 70)
 
 
-def inspect_strong_matches(
-    database: Database,
-) -> None:
-    """Inspect strong matches and their notification state."""
+def main() -> int:
+    print("GUNGA JOB RADAR — DIAGNOSTICS")
 
-    logger.info("")
-    logger.info("========== STRONG MATCHES ==========")
+    print_section("PYTHON")
+    python_info = check_python()
 
-    with database.connection() as conn:
+    print(f"Version:    {python_info['version']}")
+    print(f"Executable: {python_info['executable']}")
+    print(f"Platform:   {python_info['platform']}")
 
-        with conn.cursor(
-            cursor_factory=RealDictCursor
-        ) as cur:
+    print_section("ENVIRONMENT")
 
-            cur.execute(
-                """
-                SELECT
-                    id,
-                    title,
-                    company,
-                    score,
-                    telegram_sent,
-                    reasons
-                FROM jobs
-                WHERE tier = 'strong'
-                ORDER BY score DESC
-                """
-            )
+    for name, status in env_status().items():
+        print(f"{name}: {status}")
 
-            rows = cur.fetchall()
+    print_section("DATABASE")
 
-    if not rows:
-        logger.info("No strong matches in database.")
-        return
+    db = check_database()
 
-    logger.info(f"Total: {len(rows)} strong matches")
-    logger.info("")
+    print(f"Path:   {db['path']}")
+    print(f"Exists: {db['exists']}")
+    print(f"Size:   {db['size']} bytes")
+    print(f"OK:     {db['ok']}")
 
-    for job in rows:
+    if db["tables"]:
+        print("Tables:")
+        for table in db["tables"]:
+            print(f"  - {table}")
 
-        status = (
-            "✅ Notified"
-            if job["telegram_sent"]
-            else "⏳ Pending Telegram"
-        )
+    if db["error"]:
+        print(f"Error:  {db['error']}")
 
-        logger.info(
-            f"{job['score']}% | {job['title']} | {status}"
-        )
+    print_section("DATABASE COUNTS")
 
-        logger.info(
-            f"  Company: {job['company']}"
-        )
+    counts = check_database_counts()
 
-        if job["reasons"]:
+    if counts["counts"]:
+        for table, count in counts["counts"].items():
+            print(f"{table}: {count}")
+    else:
+        print("No recognised tables found.")
 
-            reasons = job["reasons"].split("; ")
+    if counts["error"]:
+        print(f"Error: {counts['error']}")
 
-            logger.info(
-                f"  Reasons: {reasons[0]}"
-            )
+    print_section("RESULT")
 
-        logger.info("")
+    if db["ok"]:
+        print("Database check: PASS")
+    else:
+        print("Database check: FAIL")
 
-
-def inspect_undigested_jobs(
-    database: Database,
-) -> None:
-    """Inspect jobs pending digest."""
-
-    logger.info("")
-    logger.info("========== UNDIGESTED JOBS ==========")
-
-    jobs = database.get_undigested_jobs()
-
-    if not jobs:
-        logger.info("No undigested jobs.")
-        return
-
-    logger.info(f"Total: {len(jobs)} jobs pending digest")
-
-    strong = sum(
-        1 for job in jobs if job["tier"] == "strong"
-    )
-
-    consider = sum(
-        1 for job in jobs if job["tier"] == "consider"
-    )
-
-    logger.info(f"  Strong: {strong}")
-    logger.info(f"  Consider: {consider}")
-
-    logger.info("")
-
-
-def inspect_telegram_state(
-    database: Database,
-) -> None:
-    """Inspect Telegram notification state."""
-
-    logger.info("")
-    logger.info("========== TELEGRAM STATE ==========")
-
-    with database.connection() as conn:
-
-        with conn.cursor(
-            cursor_factory=RealDictCursor
-        ) as cur:
-
-            cur.execute(
-                """
-                SELECT
-                    tier,
-                    COUNT(*) as count,
-                    SUM(CASE WHEN telegram_sent THEN 1 ELSE 0 END) as sent,
-                    SUM(CASE WHEN NOT telegram_sent THEN 1 ELSE 0 END) as pending
-                FROM jobs
-                GROUP BY tier
-                ORDER BY tier DESC
-                """
-            )
-
-            rows = cur.fetchall()
-
-    logger.info("Telegram notification state by tier:")
-    logger.info("")
-
-    for row in rows:
-
-        logger.info(
-            f"{row['tier'].upper()}: "
-            f"{row['count']} total | "
-            f"{row['sent']} sent | "
-            f"{row['pending']} pending"
-        )
-
-    logger.info("")
-
-
-def inspect_database_stats(
-    database: Database,
-) -> None:
-    """Print comprehensive database statistics."""
-
-    logger.info("")
-    logger.info("========== DATABASE STATISTICS ==========")
-
-    with database.connection() as conn:
-
-        with conn.cursor(
-            cursor_factory=RealDictCursor
-        ) as cur:
-
-            cur.execute(
-                """
-                SELECT
-                    COUNT(*) as total_jobs,
-                    COUNT(CASE WHEN telegram_sent THEN 1 END) as telegram_sent_count,
-                    COUNT(CASE WHEN digested THEN 1 END) as digested_count,
-                    AVG(score) as avg_score,
-                    MAX(score) as max_score,
-                    MIN(score) as min_score
-                FROM jobs
-                """
-            )
-
-            stats = cur.fetchone()
-
-    logger.info(f"Total jobs: {stats['total_jobs']}")
-    logger.info(
-        f"Telegram sent: {stats['telegram_sent_count']}"
-    )
-    logger.info(f"Digested: {stats['digested_count']}")
-    logger.info(
-        f"Average score: {stats['avg_score']:.1f}%"
-    )
-    logger.info(
-        f"Score range: {stats['min_score']}% - {stats['max_score']}%"
-    )
-
-    logger.info("")
-
-
-def run_full_diagnostics(
-    database: Database,
-) -> None:
-    """Run comprehensive database diagnostics."""
-
-    logger.info("")
-    logger.info("=" * 60)
-    logger.info("GUNGA JOB RADAR — FULL DIAGNOSTICS")
-    logger.info("=" * 60)
-
-    inspect_database_stats(database)
-    inspect_strong_matches(database)
-    inspect_undigested_jobs(database)
-    inspect_telegram_state(database)
-    inspect_jobs(database)
-
-    logger.info("=" * 60)
-    logger.info("DIAGNOSTICS COMPLETE")
-    logger.info("=" * 60)
+    return 0 if db["ok"] else 1
 
 
 if __name__ == "__main__":
-
-    logging.basicConfig(
-        level=logging.INFO,
-        format=(
-            "%(asctime)s | "
-            "%(levelname)s | "
-            "%(message)s"
-        ),
-    )
-
-    load_dotenv()
-
-    db_url = os.getenv("DATABASE_URL")
-
-    if not db_url:
-        raise ValueError("DATABASE_URL not set")
-
-    db = Database(db_url)
-
-    run_full_diagnostics(db)
+    raise SystemExit(main())
