@@ -120,7 +120,7 @@ def test_scoring() -> None:
 
     for job in TEST_JOBS:
 
-        score, tier, reasons, blockers, skills, locations = score_job(job)
+        score, tier, reasons, blockers, skills, locations, eligibility = score_job(job)
 
         logger.info(
             f"Score: {score}% | Tier: {tier} | "
@@ -153,7 +153,7 @@ def test_strong_match_detection() -> None:
 
     for job in TEST_JOBS:
 
-        score, tier, _, _, _, _ = score_job(job)
+        score, tier, _, _, _, _, _ = score_job(job)
 
         if tier == "strong":
             strong_matches.append((job["title"], score))
@@ -180,7 +180,7 @@ def test_database_operations(
 
         # Test insert
         job = TEST_JOBS[0]
-        score, tier, reasons, blockers, _, _ = score_job(job)
+        score, tier, reasons, blockers, _, _, _ = score_job(job)
 
         payload = {
             "source": job["source"],
@@ -246,7 +246,7 @@ def test_telegram_state(
 
         # Insert a test strong match
         job = TEST_JOBS[0]
-        score, tier, reasons, blockers, _, _ = score_job(job)
+        score, tier, reasons, blockers, _, _, _ = score_job(job)
 
         payload = {
             "source": job["source"],
