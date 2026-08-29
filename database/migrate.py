@@ -396,8 +396,32 @@ def main():
 
                 """
                 CREATE INDEX IF NOT EXISTS
+                idx_jobs_published_at
+                ON jobs(published_at DESC);
+                """,
+
+                """
+                CREATE INDEX IF NOT EXISTS
+                idx_jobs_deadline
+                ON jobs(deadline);
+                """,
+
+                """
+                CREATE INDEX IF NOT EXISTS
                 idx_jobs_tier
                 ON jobs(tier);
+                """,
+
+                """
+                CREATE INDEX IF NOT EXISTS
+                idx_jobs_telegram_sent
+                ON jobs(telegram_sent);
+                """,
+
+                """
+                CREATE INDEX IF NOT EXISTS
+                idx_jobs_digested
+                ON jobs(digested);
                 """,
 
                 """
@@ -408,17 +432,26 @@ def main():
 
                 """
                 CREATE INDEX IF NOT EXISTS
+                idx_notifications_channel
+                ON notifications(channel);
+                """,
+
+                """
+                CREATE INDEX IF NOT EXISTS
                 idx_applications_status
                 ON applications(status);
                 """,
+
             ]
 
-            for sql in indexes:
+            for index_sql in indexes:
 
-                cur.execute(sql)
+                cur.execute(
+                    index_sql
+                )
 
             # =================================================
-            # TRIGGER FUNCTION
+            # UPDATED_AT FUNCTION
             # =================================================
 
             cur.execute(
@@ -569,4 +602,4 @@ if __name__ == "__main__":
 
     sys.exit(
         main()
-                )
+    )
