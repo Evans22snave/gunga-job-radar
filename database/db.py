@@ -345,4 +345,4 @@ class Database:
                         error,
                         notification_id,
                     ),
-                )
+            )
