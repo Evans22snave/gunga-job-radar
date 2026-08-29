@@ -161,6 +161,28 @@ class Database:
 
                 return cur.fetchone()
 
+    def get_job_by_url(
+        self,
+        source_url: str,
+    ):
+
+        with self.connection() as conn:
+
+            with conn.cursor(
+                cursor_factory=RealDictCursor
+            ) as cur:
+
+                cur.execute(
+                    """
+                    SELECT *
+                    FROM jobs
+                    WHERE source_url = %s
+                    """,
+                    (source_url,),
+                )
+
+                return cur.fetchone()
+
     # ========================================================
     # TELEGRAM
     # ========================================================
@@ -323,4 +345,4 @@ class Database:
                         error,
                         notification_id,
                     ),
-            )
+                )
