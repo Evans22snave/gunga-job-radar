@@ -31,10 +31,15 @@ CREATE TABLE IF NOT EXISTS jobs (
     description TEXT,
     score INTEGER DEFAULT 0,
     tier VARCHAR(50) DEFAULT 'poor',
+    eligibility VARCHAR(30),
+    employment_type VARCHAR(60),
+    posted_date DATE,
     reasons TEXT,
     blockers TEXT,
     telegram_sent BOOLEAN DEFAULT FALSE,
     digested BOOLEAN DEFAULT FALSE,
+    applied BOOLEAN NOT NULL DEFAULT FALSE,
+    applied_at TIMESTAMP,
     fetched_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW(),
     created_at TIMESTAMP DEFAULT NOW()
@@ -59,6 +64,9 @@ CREATE INDEX IF NOT EXISTS idx_jobs_telegram_sent ON jobs(telegram_sent);
 CREATE INDEX IF NOT EXISTS idx_jobs_digested ON jobs(digested);
 CREATE INDEX IF NOT EXISTS idx_jobs_tier ON jobs(tier);
 CREATE INDEX IF NOT EXISTS idx_jobs_score ON jobs(score);
+CREATE INDEX IF NOT EXISTS idx_jobs_eligibility ON jobs(eligibility);
+CREATE INDEX IF NOT EXISTS idx_jobs_applied ON jobs(applied);
+CREATE INDEX IF NOT EXISTS idx_jobs_posted_date ON jobs(posted_date);
 CREATE INDEX IF NOT EXISTS idx_notifications_job_id ON notifications(job_id);
 CREATE INDEX IF NOT EXISTS idx_notifications_status ON notifications(status);
 
