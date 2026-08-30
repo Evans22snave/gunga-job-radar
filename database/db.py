@@ -111,7 +111,10 @@ class Database:
                         score,
                         tier,
                         reasons,
-                        blockers
+                        blockers,
+                        eligibility,
+                        employment_type,
+                        posted_date
                     )
                     VALUES (
                         %(source)s,
@@ -123,7 +126,10 @@ class Database:
                         %(score)s,
                         %(tier)s,
                         %(reasons)s,
-                        %(blockers)s
+                        %(blockers)s,
+                        %(eligibility)s,
+                        %(employment_type)s,
+                        %(posted_date)s
                     )
                     ON CONFLICT (source_url)
                     DO NOTHING
