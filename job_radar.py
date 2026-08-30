@@ -1791,6 +1791,7 @@ def save_job(
     blockers: list[str],
     matched_skills: list[str],
     matched_locations: list[str],
+    eligibility: str,
 ) -> int | None:
 
     payload = {
@@ -1828,6 +1829,16 @@ def save_job(
             "; ".join(
                 blockers
             ),
+
+        "eligibility":
+            eligibility,
+
+        "employment_type":
+            job.get("employment_type")
+            or None,
+
+        "posted_date":
+            job.get("posted_date"),
 
     }
 
@@ -2234,6 +2245,8 @@ def run_scan(
                 matched_skills,
 
                 matched_locations,
+
+                eligibility,
 
             )
 
