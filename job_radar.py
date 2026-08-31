@@ -1877,7 +1877,16 @@ def score_job(
         "skills"
     ]:
 
-        if skill in combined:
+        skill_pattern = (
+            r"\b"
+            + re.escape(skill)
+            + r"\b"
+        )
+
+        if re.search(
+            skill_pattern,
+            combined,
+        ):
 
             matched_skills.append(
                 skill
