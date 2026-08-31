@@ -136,6 +136,18 @@ BRIGHTERMONDAY_MAX_PAGES = 3
 
 BRIGHTERMONDAY_REQUEST_DELAY = 1.0
 
+OPENEDCAREER_CATEGORY_URLS = [
+
+    "https://openedcareer.com/category/jobs/information-technology-ict/",
+
+    "https://openedcareer.com/category/internships/information-technology-ict-internships/",
+
+]
+
+OPENEDCAREER_MAX_PAGES = 3
+
+OPENEDCAREER_REQUEST_DELAY = 1.0
+
 # Fixed set of location values BrighterMonday itself filters by —
 # longest-first so "Rest of Kenya" matches before the bare "Kenya"
 # substring inside it.
@@ -1682,6 +1694,351 @@ def fetch_brightermonday_jobs() -> list[
 
 
 # ============================================================
+# OPENEDCAREER COLLECTOR
+# ============================================================
+
+OPENEDCAREER_DATE_RE = re.compile(
+    r"\b(" + MONTHS_PATTERN + r")"
+    r"\s+(\d{1,2}),\s+(\d{4})\b"
+)
+
+OPENEDCAREER_NAV_HREFS = (
+
+    "/category/",
+
+    "/tag/",
+
+    "/page/",
+
+    "/job-list/",
+
+    "/employers/",
+
+    "/candidates/",
+
+    "/pricing/",
+
+    "/about/",
+
+    "/contact/",
+
+    "/faq/",
+
+    "/submit-job/",
+
+    "/login-register/",
+
+    "/user-dashboard/",
+
+    "/alerts-jobs/",
+
+    "/my-resume/",
+
+    "/terms",
+
+    "/privacy",
+
+)
+
+
+def parse_openedcareer_posted(
+    text: str,
+) -> str | None:
+
+    match = OPENEDCAREER_DATE_RE.search(
+        text
+    )
+
+    if not match:
+        return None
+
+    month_name, day_str, year_str = (
+        match.groups()
+    )
+
+    month = MONTH_NUMBERS.get(
+        month_name
+    )
+
+    if not month:
+        return None
+
+    try:
+
+        return date(
+            int(year_str),
+            month,
+            int(day_str),
+        ).isoformat()
+
+    except ValueError:
+
+        return None
+
+
+def parse_openedcareer_page(
+    html: str,
+) -> list[dict[str, Any]]:
+    """Parse one OpenedCareer category page into raw job dicts.
+
+    Post titles are wrapped in a heading (h3/h4) linking to the
+    post's own permalink — the same pattern MyJobMag uses.
+    OpenedCareer's "Recent Posts" sidebar widget also uses
+    headings, so a few unrelated (non-ICT-category) posts can
+    slip in; they score on their own merits rather than causing
+    harm, so this is left as acceptable noise rather than solved
+    with brittle, unverifiable class-name guessing.
+    """
+
+    soup = BeautifulSoup(
+        html,
+        "html.parser",
+    )
+
+    results: list[dict[str, Any]] = []
+
+    seen_hrefs: set[str] = set()
+
+    for heading in soup.find_all(
+        ["h3", "h4"]
+    ):
+
+        link = heading.find(
+            "a",
+            href=True,
+        )
+
+        if not link:
+            continue
+
+        href = link["href"]
+
+        if any(
+            nav in href
+            for nav in OPENEDCAREER_NAV_HREFS
+        ):
+
+            continue
+
+        if href.startswith("/"):
+            href = (
+                "https://openedcareer.com"
+                + href
+            )
+
+        href = href.rstrip("/") + "/"
+
+        if href in seen_hrefs:
+            continue
+
+        seen_hrefs.add(href)
+
+        heading_text = clean_text(
+            link.get_text()
+        ).strip()
+
+        if not heading_text:
+            continue
+
+        if " at " in heading_text:
+
+            title, _, company = (
+                heading_text.rpartition(
+                    " at "
+                )
+            )
+
+        else:
+
+            title, company = (
+                heading_text,
+                "Unknown",
+            )
+
+        container = (
+            heading.find_parent("article")
+            or heading.find_parent("div")
+            or heading
+        )
+
+        container_text = " ".join(
+            container.get_text(
+                separator=" "
+            ).split()
+        )
+
+        location = "Kenya"
+
+        for candidate in (
+            "Nairobi",
+            "Mombasa",
+            "Kisumu",
+            "Kilifi",
+            "Malindi",
+            "Nakuru",
+            "Eldoret",
+            "Remote",
+        ):
+
+            if candidate in container_text:
+
+                location = candidate
+
+                break
+
+        posted_date = (
+            parse_openedcareer_posted(
+                container_text
+            )
+        )
+
+        description = normalize_text(
+            container_text.replace(
+                heading_text,
+                " ",
+            )
+        )
+
+        results.append({
+
+            "source":
+                "OpenedCareer",
+
+            "source_url":
+                href,
+
+            "title":
+                title.strip()
+                or "Untitled",
+
+            "company":
+                company.strip()
+                or "Unknown",
+
+            "location":
+                location,
+
+            "description":
+                description,
+
+            "employment_type":
+                "",
+
+            "posted_date":
+                posted_date,
+
+        })
+
+    return results
+
+
+def fetch_openedcareer_jobs() -> list[
+    dict[str, Any]
+]:
+
+    logger.info(
+        "Fetching jobs from OpenedCareer..."
+    )
+
+    jobs: list[dict[str, Any]] = []
+
+    seen_urls: set[str] = set()
+
+    session = requests.Session()
+
+    session.headers.update({
+
+        "User-Agent":
+            "Mozilla/5.0 (compatible; "
+            "Gunga-Job-Radar/1.0)",
+
+        "Accept":
+            "text/html",
+
+    })
+
+    for category_url in (
+        OPENEDCAREER_CATEGORY_URLS
+    ):
+
+        for page in range(
+            1,
+            OPENEDCAREER_MAX_PAGES + 1,
+        ):
+
+            url = (
+                category_url
+                if page == 1
+                else (
+                    category_url.rstrip("/")
+                    + f"/page/{page}/"
+                )
+            )
+
+            try:
+
+                response = session.get(
+                    url,
+                    timeout=REQUEST_TIMEOUT,
+                )
+
+                if response.status_code == 404:
+                    break
+
+                response.raise_for_status()
+
+                page_jobs = (
+                    parse_openedcareer_page(
+                        response.text
+                    )
+                )
+
+                if not page_jobs:
+                    break
+
+                new_on_page = 0
+
+                for job in page_jobs:
+
+                    if job["source_url"] in seen_urls:
+                        continue
+
+                    seen_urls.add(
+                        job["source_url"]
+                    )
+
+                    jobs.append(job)
+
+                    new_on_page += 1
+
+                if new_on_page == 0:
+                    break
+
+            except requests.RequestException as exc:
+
+                logger.warning(
+                    "OpenedCareer request "
+                    "failed for '%s': %s",
+                    url,
+                    exc,
+                )
+
+                break
+
+            time.sleep(
+                OPENEDCAREER_REQUEST_DELAY
+            )
+
+    logger.info(
+        "OpenedCareer returned %d "
+        "unique jobs",
+        len(jobs),
+    )
+
+    return jobs
+
+
+# ============================================================
 # MATCHING ENGINE
 # ============================================================
 
@@ -2538,20 +2895,25 @@ def run_scan(
 
     brightermonday_jobs = fetch_brightermonday_jobs()
 
+    openedcareer_jobs = fetch_openedcareer_jobs()
+
     jobs = (
         himalayas_jobs
         + myjobmag_jobs
         + brightermonday_jobs
+        + openedcareer_jobs
     )
 
     logger.info(
         "Processing %d jobs "
         "(%d Himalayas, %d MyJobMag, "
-        "%d BrighterMonday)...",
+        "%d BrighterMonday, "
+        "%d OpenedCareer)...",
         len(jobs),
         len(himalayas_jobs),
         len(myjobmag_jobs),
         len(brightermonday_jobs),
+        len(openedcareer_jobs),
     )
 
     jobs_fetched = len(jobs)
