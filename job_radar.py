@@ -45,7 +45,7 @@ import os
 import re
 import smtplib
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Any
@@ -123,6 +123,35 @@ MYJOBMAG_CATEGORY_URLS = [
 MYJOBMAG_MAX_PAGES = 3
 
 MYJOBMAG_REQUEST_DELAY = 1.0
+
+BRIGHTERMONDAY_CATEGORY_URLS = [
+
+    "https://www.brightermonday.co.ke/jobs/it-telecoms",
+
+    "https://www.brightermonday.co.ke/jobs/software-data",
+
+]
+
+BRIGHTERMONDAY_MAX_PAGES = 3
+
+BRIGHTERMONDAY_REQUEST_DELAY = 1.0
+
+# Fixed set of location values BrighterMonday itself filters by —
+# longest-first so "Rest of Kenya" matches before the bare "Kenya"
+# substring inside it.
+BRIGHTERMONDAY_LOCATIONS = [
+
+    "Remote (Work From Home)",
+
+    "Outside Kenya",
+
+    "Rest of Kenya",
+
+    "Nairobi",
+
+    "Kenya",
+
+]
 
 STRONG_MATCH_THRESHOLD = 75
 
@@ -1135,10 +1164,10 @@ def parse_myjobmag_page(
             or heading
         )
 
-        container_text = clean_text(
+        container_text = " ".join(
             container.get_text(
                 separator=" "
-            )
+            ).split()
         )
 
         location_link = container.find(
@@ -1326,6 +1355,326 @@ def fetch_myjobmag_jobs() -> list[
 
     logger.info(
         "MyJobMag returned %d unique jobs",
+        len(jobs),
+    )
+
+    return jobs
+
+
+# ============================================================
+# BRIGHTERMONDAY COLLECTOR
+# ============================================================
+
+POSTED_RELATIVE_RE = re.compile(
+    r"\b(Today|Yesterday|\d+\s+"
+    r"(?:day|days|week|weeks|month|months)"
+    r"\s+ago)\b",
+    re.IGNORECASE,
+)
+
+
+def parse_brightermonday_posted(
+    text: str,
+) -> str | None:
+    """Convert "3 days ago" / "Today" style text to an ISO date."""
+
+    match = POSTED_RELATIVE_RE.search(
+        text
+    )
+
+    if not match:
+        return None
+
+    phrase = match.group(1).lower()
+
+    today = date.today()
+
+    if phrase == "today":
+
+        return today.isoformat()
+
+    if phrase == "yesterday":
+
+        return (
+            today
+            - timedelta(days=1)
+        ).isoformat()
+
+    number_match = re.match(
+        r"(\d+)\s+(day|week|month)",
+        phrase,
+    )
+
+    if not number_match:
+        return None
+
+    amount = int(
+        number_match.group(1)
+    )
+
+    unit = number_match.group(2)
+
+    days = {
+
+        "day": amount,
+
+        "week": amount * 7,
+
+        "month": amount * 30,
+
+    }[unit]
+
+    return (
+        today
+        - timedelta(days=days)
+    ).isoformat()
+
+
+def parse_brightermonday_page(
+    html: str,
+) -> list[dict[str, Any]]:
+    """Parse one BrighterMonday category page into raw job dicts.
+
+    Job listings link to /listings/<slug>. That href pattern is
+    unique to actual job cards — sidebar filter links, pagination,
+    and company-profile links all use different paths — so
+    anchoring on it (rather than guessing CSS classes we can't
+    see) keeps this scoped correctly.
+    """
+
+    soup = BeautifulSoup(
+        html,
+        "html.parser",
+    )
+
+    results: list[dict[str, Any]] = []
+
+    seen_hrefs: set[str] = set()
+
+    for link in soup.find_all(
+        "a",
+        href=True,
+    ):
+
+        href = link["href"]
+
+        if "/listings/" not in href:
+            continue
+
+        if href.startswith("/"):
+            href = (
+                "https://www.brightermonday.co.ke"
+                + href
+            )
+
+        href = href.split("?")[0]
+
+        if href in seen_hrefs:
+            continue
+
+        title = clean_text(
+            link.get_text()
+        ).strip()
+
+        if not title:
+            continue
+
+        seen_hrefs.add(href)
+
+        container = (
+            link.find_parent("li")
+            or link.find_parent("article")
+            or link.find_parent("div")
+            or link
+        )
+
+        container_text = " ".join(
+            container.get_text(
+                separator=" "
+            ).split()
+        )
+
+        remainder = container_text.replace(
+            title,
+            " ",
+            1,
+        )
+
+        location = "Kenya"
+
+        location_start = len(
+            remainder
+        )
+
+        for candidate in (
+            BRIGHTERMONDAY_LOCATIONS
+        ):
+
+            idx = remainder.find(
+                candidate
+            )
+
+            if idx != -1 and idx < location_start:
+
+                location_start = idx
+
+                location = (
+                    "Remote"
+                    if "Remote" in candidate
+                    else candidate
+                )
+
+        company = remainder[
+            :location_start
+        ].strip(
+            " -|"
+        )
+
+        if (
+            not company
+            or len(company) > 80
+        ):
+
+            company = "Unknown"
+
+        posted_date = (
+            parse_brightermonday_posted(
+                container_text
+            )
+        )
+
+        description = normalize_text(
+            remainder
+        )
+
+        results.append({
+
+            "source":
+                "BrighterMonday",
+
+            "source_url":
+                href,
+
+            "title":
+                title,
+
+            "company":
+                company,
+
+            "location":
+                location,
+
+            "description":
+                description,
+
+            "employment_type":
+                "",
+
+            "posted_date":
+                posted_date,
+
+        })
+
+    return results
+
+
+def fetch_brightermonday_jobs() -> list[
+    dict[str, Any]
+]:
+
+    logger.info(
+        "Fetching jobs from BrighterMonday..."
+    )
+
+    jobs: list[dict[str, Any]] = []
+
+    seen_urls: set[str] = set()
+
+    session = requests.Session()
+
+    session.headers.update({
+
+        "User-Agent":
+            "Mozilla/5.0 (compatible; "
+            "Gunga-Job-Radar/1.0)",
+
+        "Accept":
+            "text/html",
+
+    })
+
+    for category_url in (
+        BRIGHTERMONDAY_CATEGORY_URLS
+    ):
+
+        for page in range(
+            1,
+            BRIGHTERMONDAY_MAX_PAGES + 1,
+        ):
+
+            url = (
+                category_url
+                if page == 1
+                else f"{category_url}?page={page}"
+            )
+
+            try:
+
+                response = session.get(
+                    url,
+                    timeout=REQUEST_TIMEOUT,
+                )
+
+                if response.status_code == 404:
+                    break
+
+                response.raise_for_status()
+
+                page_jobs = (
+                    parse_brightermonday_page(
+                        response.text
+                    )
+                )
+
+                if not page_jobs:
+                    break
+
+                new_on_page = 0
+
+                for job in page_jobs:
+
+                    if job["source_url"] in seen_urls:
+                        continue
+
+                    seen_urls.add(
+                        job["source_url"]
+                    )
+
+                    jobs.append(job)
+
+                    new_on_page += 1
+
+                if new_on_page == 0:
+                    break
+
+            except requests.RequestException as exc:
+
+                logger.warning(
+                    "BrighterMonday request "
+                    "failed for '%s': %s",
+                    url,
+                    exc,
+                )
+
+                break
+
+            time.sleep(
+                BRIGHTERMONDAY_REQUEST_DELAY
+            )
+
+    logger.info(
+        "BrighterMonday returned %d "
+        "unique jobs",
         len(jobs),
     )
 
@@ -2178,14 +2527,22 @@ def run_scan(
 
     myjobmag_jobs = fetch_myjobmag_jobs()
 
-    jobs = himalayas_jobs + myjobmag_jobs
+    brightermonday_jobs = fetch_brightermonday_jobs()
+
+    jobs = (
+        himalayas_jobs
+        + myjobmag_jobs
+        + brightermonday_jobs
+    )
 
     logger.info(
         "Processing %d jobs "
-        "(%d Himalayas, %d MyJobMag)...",
+        "(%d Himalayas, %d MyJobMag, "
+        "%d BrighterMonday)...",
         len(jobs),
         len(himalayas_jobs),
         len(myjobmag_jobs),
+        len(brightermonday_jobs),
     )
 
     jobs_fetched = len(jobs)
