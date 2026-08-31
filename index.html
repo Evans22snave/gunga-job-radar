@@ -1,2972 +1,777 @@
-"""
-Gunga Job Radar
-Phase 4 — Kenya-aware job matching
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gunga Job Radar — Console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0A1416;
+    --panel: #0F1E21;
+    --panel-raised: #13272B;
+    --grid: #1B3236;
+    --border: #22393D;
+    --text: #E7F3F1;
+    --text-muted: #7FA39C;
+    --text-faint: #4E6A6C;
 
-Pipeline:
+    --signal-strong: #3ED598;
+    --signal-strong-dim: #1C4A3B;
+    --signal-consider: #F2B84B;
+    --signal-consider-dim: #4A3B1C;
+    --signal-poor: #6A7F80;
+    --signal-poor-dim: #2A3A3B;
+    --signal-restricted: #E5695A;
+    --signal-restricted-dim: #4A2420;
 
-    Himalayas API   MyJobMag (Kenya)
-          ↓               ↓
-          └───────┬───────┘
-                   ↓
-               Collector
-                   ↓
-     Location Classification
-          ↓
-       Match Scoring
-          ↓
-        PostgreSQL
-          ↓
-     ┌─────┴─────┐
-     ↓           ↓
-  Telegram     Gmail
-  Alerts       Digest
+    --sweep: #58D9C4;
 
-Modes:
+    --radius: 10px;
+    --radius-sm: 6px;
+  }
 
-    python job_radar.py --mode scan
-    python job_radar.py --mode digest
-    python job_radar.py --mode both
+  * { box-sizing: border-box; }
 
-Required environment variables:
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    background-image:
+      linear-gradient(var(--grid) 1px, transparent 1px),
+      linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+    background-size: 34px 34px;
+    color: var(--text);
+    font-family: 'Inter', sans-serif;
+    min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+  }
 
-    DATABASE_URL
-    TELEGRAM_BOT_TOKEN
-    TELEGRAM_CHAT_ID
-    GMAIL_ADDRESS
-    GMAIL_APP_PASSWORD
-"""
+  a { color: inherit; }
 
-from __future__ import annotations
+  .wrap {
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 22px 16px 80px;
+  }
 
-import argparse
-import html
-import logging
-import os
-import re
-import smtplib
-import time
-from datetime import date, datetime, timedelta
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from typing import Any
+  /* ================= HEADER ================= */
 
-import requests
-from bs4 import BeautifulSoup
-from dotenv import load_dotenv
+  header {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 4px 4px 22px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 18px;
+  }
 
-from database.db import Database, DatabaseError
+  .radar-dish {
+    position: relative;
+    width: 46px;
+    height: 46px;
+    flex-shrink: 0;
+    border-radius: 50%;
+    border: 1px solid var(--border);
+    background:
+      radial-gradient(circle at center, transparent 0, transparent 55%, var(--grid) 56%, transparent 57%),
+      var(--panel);
+    overflow: hidden;
+  }
 
+  .radar-dish::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: conic-gradient(from 0deg, var(--sweep) 0deg, transparent 55deg, transparent 360deg);
+    opacity: 0.85;
+    animation: sweep 3.4s linear infinite;
+  }
 
-# ============================================================
-# ENVIRONMENT
-# ============================================================
+  .radar-dish::after {
+    content: "";
+    position: absolute;
+    top: 50%; left: 50%;
+    width: 4px; height: 4px;
+    margin: -2px 0 0 -2px;
+    border-radius: 50%;
+    background: var(--sweep);
+    box-shadow: 0 0 6px 1px var(--sweep);
+  }
 
-load_dotenv()
+  @keyframes sweep {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
 
-DATABASE_URL = os.getenv("DATABASE_URL")
+  @media (prefers-reduced-motion: reduce) {
+    .radar-dish::before { animation: none; opacity: 0.4; }
+  }
 
-TELEGRAM_BOT_TOKEN = os.getenv(
-    "TELEGRAM_BOT_TOKEN"
-)
+  .title-block h1 {
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 20px;
+    font-weight: 600;
+    margin: 0;
+    letter-spacing: 0.2px;
+  }
 
-TELEGRAM_CHAT_ID = os.getenv(
-    "TELEGRAM_CHAT_ID"
-)
+  .title-block .sub {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11.5px;
+    color: var(--text-muted);
+    margin-top: 3px;
+  }
 
-GMAIL_ADDRESS = os.getenv(
-    "GMAIL_ADDRESS"
-)
+  /* ================= STATS ================= */
 
-GMAIL_APP_PASSWORD = os.getenv(
-    "GMAIL_APP_PASSWORD"
-)
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+    margin-bottom: 18px;
+  }
 
+  .stat {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 12px 14px;
+  }
 
-# ============================================================
-# LOGGING
-# ============================================================
+  .stat .num {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 22px;
+    font-weight: 700;
+    line-height: 1;
+  }
 
-logging.basicConfig(
-    level=logging.INFO,
-    format=(
-        "%(asctime)s | "
-        "%(levelname)s | "
-        "%(message)s"
-    ),
-)
+  .stat .num.strong { color: var(--signal-strong); }
+  .stat .num.applied { color: var(--sweep); }
 
-logger = logging.getLogger(
-    "Gunga Job Radar"
-)
+  .stat .label {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 5px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+  }
 
+  /* ================= FILTER CONSOLE ================= */
 
-# ============================================================
-# CONFIGURATION
-# ============================================================
+  .console {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px;
+    margin-bottom: 18px;
+  }
 
-HIMALAYAS_API = (
-    "https://himalayas.app/jobs/api/search"
-)
+  .console-row {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 8px;
+  }
 
-REQUEST_TIMEOUT = 30
+  .console-row:last-child { margin-bottom: 0; }
 
-HIMALAYAS_REQUEST_DELAY = 0.75
+  input[type="text"], select {
+    background: var(--panel-raised);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: 'Inter', sans-serif;
+    font-size: 13.5px;
+    border-radius: var(--radius-sm);
+    padding: 9px 11px;
+    outline: none;
+  }
 
-MYJOBMAG_CATEGORY_URLS = [
+  input[type="text"]:focus, select:focus {
+    border-color: var(--sweep);
+    box-shadow: 0 0 0 2px rgba(88, 217, 196, 0.18);
+  }
 
-    "https://www.myjobmag.co.ke/jobs-by-field/information-technology",
+  input[type="text"]::placeholder { color: var(--text-faint); }
 
-    "https://www.myjobmag.co.ke/jobs-by-field/internships",
+  #search { flex: 1 1 220px; min-width: 160px; }
+  #locationFilter { flex: 1 1 160px; min-width: 140px; }
 
-]
+  select { flex: 1 1 130px; min-width: 110px; cursor: pointer; }
 
-MYJOBMAG_MAX_PAGES = 3
+  /* ================= JOB LIST ================= */
 
-MYJOBMAG_REQUEST_DELAY = 1.0
+  #status-line {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-bottom: 12px;
+  }
 
-BRIGHTERMONDAY_CATEGORY_URLS = [
+  .job-list { display: flex; flex-direction: column; gap: 10px; }
 
-    "https://www.brightermonday.co.ke/jobs/it-telecoms",
+  .job-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--signal-poor);
+    border-radius: var(--radius);
+    padding: 14px 16px;
+    transition: border-color 0.15s ease;
+  }
 
-    "https://www.brightermonday.co.ke/jobs/software-data",
+  .job-card.tier-strong { border-left-color: var(--signal-strong); }
+  .job-card.tier-consider { border-left-color: var(--signal-consider); }
+  .job-card.tier-poor { border-left-color: var(--signal-poor); }
+  .job-card.elig-restricted { border-left-color: var(--signal-restricted); }
 
-]
+  .job-card.is-applied { opacity: 0.72; }
 
-BRIGHTERMONDAY_MAX_PAGES = 3
+  .job-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 10px;
+  }
 
-BRIGHTERMONDAY_REQUEST_DELAY = 1.0
+  .job-title {
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 15.5px;
+    font-weight: 600;
+    margin: 0 0 2px;
+  }
 
-# Fixed set of location values BrighterMonday itself filters by —
-# longest-first so "Rest of Kenya" matches before the bare "Kenya"
-# substring inside it.
-BRIGHTERMONDAY_LOCATIONS = [
+  .job-company {
+    font-size: 13px;
+    color: var(--text-muted);
+  }
 
-    "Remote (Work From Home)",
+  .job-score {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 15px;
+    font-weight: 700;
+    white-space: nowrap;
+    padding-top: 1px;
+  }
 
-    "Outside Kenya",
+  .tier-strong .job-score { color: var(--signal-strong); }
+  .tier-consider .job-score { color: var(--signal-consider); }
+  .tier-poor .job-score { color: var(--signal-poor); }
 
-    "Rest of Kenya",
+  .badge-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 9px 0;
+  }
 
-    "Nairobi",
+  .badge {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10.5px;
+    padding: 3px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    white-space: nowrap;
+  }
 
-    "Kenya",
+  .badge.elig-kenya { color: var(--signal-strong); border-color: var(--signal-strong-dim); background: var(--signal-strong-dim); }
+  .badge.elig-africa, .badge.elig-worldwide { color: var(--signal-consider); border-color: var(--signal-consider-dim); background: var(--signal-consider-dim); }
+  .badge.elig-restricted { color: var(--signal-restricted); border-color: var(--signal-restricted-dim); background: var(--signal-restricted-dim); }
 
-]
+  .reasons {
+    font-size: 12.5px;
+    color: var(--text-muted);
+    line-height: 1.6;
+    margin: 8px 0 12px;
+  }
 
-STRONG_MATCH_THRESHOLD = 75
+  .reasons summary {
+    cursor: pointer;
+    color: var(--sweep);
+    font-size: 12px;
+    font-family: 'JetBrains Mono', monospace;
+    margin-bottom: 6px;
+  }
 
-CONSIDER_THRESHOLD = 45
+  .reasons ul { margin: 0; padding-left: 18px; }
 
-# Phase 4 weighted scoring — weights sum to 100
-WEIGHT_TITLE = 30
-WEIGHT_SKILLS = 25
-WEIGHT_EDUCATION = 15
-WEIGHT_EXPERIENCE = 10
-WEIGHT_LOCATION = 10
-WEIGHT_EMPLOYMENT_TYPE = 5
-WEIGHT_FRESHNESS = 5
+  .job-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
 
-FRESHNESS_FULL_DAYS = 14
-FRESHNESS_PARTIAL_DAYS = 30
+  .btn {
+    font-family: 'Inter', sans-serif;
+    font-size: 12.5px;
+    font-weight: 500;
+    padding: 8px 13px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: var(--panel-raised);
+    color: var(--text);
+    cursor: pointer;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
 
-ELIGIBILITY_LABELS = {
+  .btn.apply-link { border-color: var(--sweep); color: var(--sweep); }
+  .btn.apply-link:hover { background: rgba(88, 217, 196, 0.1); }
 
-    "KENYA":
-        "🇰🇪 KENYA ELIGIBLE",
+  .btn.mark-applied:hover { border-color: var(--text-muted); }
 
-    "REMOTE-AFRICA":
-        "🌍 AFRICA ELIGIBLE",
+  .btn.mark-applied.done {
+    color: var(--sweep);
+    border-color: var(--sweep);
+    background: rgba(88, 217, 196, 0.08);
+  }
 
-    "REMOTE-WORLDWIDE":
-        "🌍 WORLDWIDE REMOTE",
+  .applied-note {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--sweep);
+  }
 
-    "REMOTE-RESTRICTED":
-        "⚠️ LOCATION RESTRICTED",
+  /* ================= LOAD MORE / EMPTY / SETUP ================= */
 
-    "UNKNOWN":
-        "❓ LOCATION UNCLEAR",
+  .load-more-wrap { text-align: center; margin-top: 18px; }
 
+  #emptyState, #errorState {
+    text-align: center;
+    padding: 50px 20px;
+    color: var(--text-muted);
+    font-size: 13.5px;
+    display: none;
+  }
+
+  #setupScreen {
+    max-width: 560px;
+    margin: 60px auto;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 26px 24px;
+    line-height: 1.7;
+    font-size: 13.5px;
+  }
+
+  #setupScreen h2 {
+    font-family: 'Space Grotesk', sans-serif;
+    margin-top: 0;
+    font-size: 17px;
+  }
+
+  #setupScreen code {
+    font-family: 'JetBrains Mono', monospace;
+    background: var(--panel-raised);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 12.5px;
+  }
+
+  #setupScreen ol { padding-left: 20px; }
+
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+  <header>
+    <div class="radar-dish" aria-hidden="true"></div>
+    <div class="title-block">
+      <h1>Gunga Job Radar</h1>
+      <div class="sub">ICT contacts · Kenya + remote frequencies</div>
+    </div>
+  </header>
+
+  <div id="setupScreen" class="hidden">
+    <h2>⚙ Connect this console to your database</h2>
+    <p>This page needs your Supabase project's URL and public <strong>anon</strong> key to read job data. Never paste the <code>service_role</code> key here — only the public anon key, which is safe to expose in a browser.</p>
+    <ol>
+      <li>Open your Supabase project → <strong>Project Settings → API</strong></li>
+      <li>Copy the <strong>Project URL</strong> and the <strong>anon public</strong> key</li>
+      <li>Open <code>index.html</code> in this repo and fill in the <code>SUPABASE_URL</code> and <code>SUPABASE_ANON_KEY</code> constants near the top of the <code>&lt;script&gt;</code> block</li>
+      <li>Run <code>database/migration_dashboard.sql</code> once in the Supabase SQL Editor if you haven't already — it adds the columns and the secure "mark applied" function this page needs</li>
+      <li>Commit and push — GitHub Pages will pick it up automatically</li>
+    </ol>
+  </div>
+
+  <div id="app" class="hidden">
+
+    <div class="stats">
+      <div class="stat">
+        <div class="num" id="statTotal">—</div>
+        <div class="label">Tracked</div>
+      </div>
+      <div class="stat">
+        <div class="num strong" id="statStrong">—</div>
+        <div class="label">Strong matches</div>
+      </div>
+      <div class="stat">
+        <div class="num applied" id="statApplied">—</div>
+        <div class="label">Applied</div>
+      </div>
+    </div>
+
+    <div class="console">
+      <div class="console-row">
+        <input type="text" id="search" placeholder="Search title or company…">
+        <input type="text" id="locationFilter" placeholder="Location contains… (Kilifi, Mombasa, Nairobi)">
+      </div>
+      <div class="console-row">
+        <select id="eligibilityFilter">
+          <option value="all">All eligibility</option>
+          <option value="KENYA">🇰🇪 Kenya</option>
+          <option value="REMOTE-AFRICA">🌍 Africa remote</option>
+          <option value="REMOTE-WORLDWIDE">🌍 Worldwide remote</option>
+          <option value="REMOTE-RESTRICTED">⚠️ Restricted</option>
+          <option value="UNKNOWN">❓ Unclear</option>
+        </select>
+        <select id="tierFilter">
+          <option value="all">All tiers</option>
+          <option value="strong">Strong</option>
+          <option value="consider">Consider</option>
+          <option value="poor">Poor</option>
+        </select>
+        <select id="sourceFilter">
+          <option value="all">All sources</option>
+          <option value="Himalayas">Himalayas</option>
+          <option value="MyJobMag">MyJobMag</option>
+          <option value="BrighterMonday">BrighterMonday</option>
+        </select>
+        <select id="appliedFilter">
+          <option value="all">All</option>
+          <option value="false">Not applied</option>
+          <option value="true">Applied</option>
+        </select>
+        <select id="sortFilter">
+          <option value="score_desc">Highest match</option>
+          <option value="posted_desc">Newest posted</option>
+          <option value="created_desc">Recently added</option>
+        </select>
+      </div>
+    </div>
+
+    <div id="status-line"></div>
+
+    <div class="job-list" id="jobList"></div>
+
+    <div id="emptyState">No contacts on this frequency — try widening the filters.</div>
+    <div id="errorState"></div>
+
+    <div class="load-more-wrap">
+      <button class="btn" id="loadMoreBtn">Load more</button>
+    </div>
+
+  </div>
+
+</div>
+
+<script type="module">
+import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
+
+// ============================================================
+// CONFIG — fill these in from Supabase → Project Settings → API
+// ============================================================
+const SUPABASE_URL = "https://vaymtujfjneynnsckeng.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZheW10dWpmam5leW5uc2NrZW5nIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc3ODY2NTgsImV4cCI6MjEwMzM2MjY1OH0.BATCilwQKvqqptenIdhbDImuuYncbzUywg72Wa3DeXo";
+
+const PAGE_SIZE = 30;
+
+const ELIGIBILITY_LABELS = {
+  "KENYA": { text: "🇰🇪 KENYA ELIGIBLE", class: "elig-kenya" },
+  "REMOTE-AFRICA": { text: "🌍 AFRICA ELIGIBLE", class: "elig-africa" },
+  "REMOTE-WORLDWIDE": { text: "🌍 WORLDWIDE REMOTE", class: "elig-worldwide" },
+  "REMOTE-RESTRICTED": { text: "⚠️ LOCATION RESTRICTED", class: "elig-restricted" },
+  "UNKNOWN": { text: "❓ LOCATION UNCLEAR", class: "elig-unknown" },
+};
+
+const state = {
+  page: 0,
+  filters: {
+    search: "",
+    location: "",
+    eligibility: "all",
+    tier: "all",
+    source: "all",
+    applied: "all",
+    sort: "score_desc",
+  },
+  reachedEnd: false,
+  loading: false,
+};
+
+let supabase = null;
+
+function isConfigured() {
+  return SUPABASE_URL && SUPABASE_ANON_KEY
+    && !SUPABASE_URL.startsWith("YOUR_")
+    && !SUPABASE_ANON_KEY.startsWith("YOUR_");
 }
 
-EMPLOYMENT_TYPE_TERMS = [
-
-    "internship",
-    "intern",
-
-    "attachment",
-
-    "graduate trainee",
-
-    "full-time",
-    "full time",
-
-    "part-time",
-    "part time",
-
-    "contract",
-
-    "temporary",
-
-]
-
-
-# ============================================================
-# CANDIDATE PROFILE
-# ============================================================
-
-PROFILE = {
-
-    "locations_preferred": [
-        "malindi",
-        "kilifi",
-        "mombasa",
-        "nairobi",
-        "kenya",
-        "remote",
-        "worldwide",
-        "africa",
-    ],
-
-    "target_titles": [
-
-        "ict intern",
-        "ict assistant",
-        "ict officer",
-
-        "it intern",
-        "it support",
-        "it technician",
-        "it assistant",
-
-        "help desk",
-        "helpdesk",
-
-        "technical support",
-        "support technician",
-
-        "computer technician",
-
-        "network technician",
-        "networking intern",
-
-        "junior developer",
-        "junior software developer",
-        "junior web developer",
-
-        "web developer",
-
-        "frontend developer",
-        "front-end developer",
-
-        "software developer",
-        "software developer intern",
-
-        "application developer",
-
-        "android developer",
-
-        "it attache",
-        "ict attache",
-        "ict attachment",
-
-    ],
-
-    "skills": [
-
-        "it support",
-        "technical support",
-
-        "help desk",
-        "helpdesk",
-
-        "hardware",
-        "computer hardware",
-
-        "troubleshooting",
-
-        "networking",
-        "network",
-
-        "html",
-        "css",
-        "javascript",
-
-        "web development",
-
-        "react",
-        "react.js",
-
-        "typescript",
-
-        "node.js",
-        "nodejs",
-
-        "postgresql",
-        "postgres",
-
-        "kotlin",
-        "android",
-
-        "data entry",
-        "records management",
-
-        "git",
-        "github",
-
-    ],
-
-    "soft_negatives": [
-
-        "bachelor's degree required",
-        "bachelor degree required",
-
-        "master's degree required",
-        "master degree required",
-
-        "5+ years",
-        "5 years experience",
-        "6+ years",
-        "7+ years",
-        "8+ years",
-        "10+ years",
-
-        "senior developer",
-        "senior software developer",
-        "senior engineer",
-
-        "lead developer",
-        "principal engineer",
-
-        "manager",
-        "director",
-
-        "ccna required",
-        "huawei hcia required",
-
-    ],
+function escapeHtml(str) {
+  const div = document.createElement("div");
+  div.textContent = str ?? "";
+  return div.innerHTML;
 }
 
-
-# ============================================================
-# ENVIRONMENT VALIDATION
-# ============================================================
-
-def require_environment(
-    *names: str,
-) -> None:
-
-    missing = [
-        name
-        for name in names
-        if not os.getenv(name)
-    ]
-
-    if missing:
-
-        raise RuntimeError(
-            "Missing required environment "
-            "variable(s): "
-            + ", ".join(missing)
-        )
-
-
-# ============================================================
-# TEXT HELPERS
-# ============================================================
-
-def clean_text(
-    value: Any,
-) -> str:
-
-    if value is None:
-        return ""
-
-    if isinstance(value, list):
-
-        return ", ".join(
-            clean_text(item)
-            for item in value
-        )
-
-    if isinstance(value, dict):
-
-        return " ".join(
-            clean_text(item)
-            for item in value.values()
-        )
-
-    return str(value)
-
-
-def normalize_text(
-    value: Any,
-) -> str:
-
-    return " ".join(
-        clean_text(value)
-        .lower()
-        .split()
-    )
-
-
-# ============================================================
-# LOCATION CLASSIFICATION
-# ============================================================
-
-def classify_location(
-    job: dict[str, Any],
-) -> tuple[str, list[str]]:
-
-    location = normalize_text(
-        job.get("location")
-    )
-
-    description = normalize_text(
-        job.get("description")
-    )
-
-    title = normalize_text(
-        job.get("title")
-    )
-
-    text = " ".join([
-        location,
-        description,
-        title,
-    ])
-
-    # --------------------------------------------------------
-    # Kenya
-    # --------------------------------------------------------
-
-    kenya_terms = [
-
-        "kenya",
-        "kenyan",
-
-        "nairobi",
-        "mombasa",
-        "malindi",
-        "kilifi",
-
-        "nakuru",
-        "kisumu",
-        "eldoret",
-
-    ]
-
-    kenya_matches = [
-        term
-        for term in kenya_terms
-        if term in text
-    ]
-
-    if kenya_matches:
-
-        return (
-            "KENYA",
-            [
-                "Kenya eligibility detected"
-            ],
-        )
-
-    # --------------------------------------------------------
-    # Africa
-    # --------------------------------------------------------
-
-    africa_terms = [
-
-        "africa",
-        "african",
-
-        "sub-saharan africa",
-
-        "east africa",
-        "east african",
-
-        "africa-wide",
-
-    ]
-
-    if any(
-        term in text
-        for term in africa_terms
-    ):
-
-        return (
-            "REMOTE-AFRICA",
-            [
-                "Africa eligibility detected"
-            ],
-        )
-
-    # --------------------------------------------------------
-    # Worldwide
-    # --------------------------------------------------------
-
-    worldwide_terms = [
-
-        "worldwide",
-
-        "work from anywhere",
-
-        "anywhere in the world",
-
-        "global remote",
-
-        "remote anywhere",
-
-        "remote - worldwide",
-
-        "remote / worldwide",
-
-        "location: worldwide",
-
-        "worldwide remote",
-
-    ]
-
-    if any(
-        term in text
-        for term in worldwide_terms
-    ):
-
-        return (
-            "REMOTE-WORLDWIDE",
-            [
-                "Worldwide remote eligibility detected"
-            ],
-        )
-
-    # --------------------------------------------------------
-    # Explicit restrictions
-    # --------------------------------------------------------
-
-    restrictions = {
-
-        "US": [
-
-            "us only",
-            "usa only",
-            "united states only",
-
-            "must be based in the us",
-            "must be located in the us",
-
-            "us-based only",
-
-            "us residents only",
-
-        ],
-
-        "UK": [
-
-            "uk only",
-            "united kingdom only",
-
-            "must be based in the uk",
-            "must be located in the uk",
-
-            "uk-based only",
-
-            "uk residents only",
-
-        ],
-
-        "EU": [
-
-            "eu only",
-            "european union only",
-
-            "must be based in the eu",
-            "must be located in the eu",
-
-            "eu residents only",
-
-        ],
-
-        "Canada": [
-
-            "canada only",
-            "canadian residents only",
-
-            "must be based in canada",
-            "must be located in canada",
-
-        ],
-
-    }
-
-    for region, terms in restrictions.items():
-
-        matches = [
-            term
-            for term in terms
-            if term in text
-        ]
-
-        if matches:
-
-            return (
-                "REMOTE-RESTRICTED",
-                [
-                    f"Restricted to {region}"
-                ],
-            )
-
-    # --------------------------------------------------------
-    # Generic remote
-    # --------------------------------------------------------
-
-    if "remote" in text:
-
-        return (
-            "UNKNOWN",
-            [
-                "Remote work mentioned, "
-                "but geographic eligibility "
-                "is unclear"
-            ],
-        )
-
-    # --------------------------------------------------------
-    # Unknown
-    # --------------------------------------------------------
-
-    return (
-        "UNKNOWN",
-        [
-            "No clear Kenya eligibility found"
-        ],
-    )
-
-
-# ============================================================
-# HIMALAYAS COLLECTOR
-# ============================================================
-
-def fetch_himalayas_jobs() -> list[
-    dict[str, Any]
-]:
-
-    logger.info(
-        "Fetching jobs from Himalayas..."
-    )
-
-    keywords = [
-
-        "ICT",
-        "IT support",
-        "IT technician",
-
-        "help desk",
-        "helpdesk",
-
-        "technical support",
-
-        "web developer",
-
-        "frontend developer",
-
-        "software developer",
-
-        "networking",
-
-        "computer technician",
-
-        "JavaScript",
-
-        "React",
-
-        "Node.js",
-
-        "Kotlin",
-
-        "Android",
-
-    ]
-
-    jobs: list[
-        dict[str, Any]
-    ] = []
-
-    seen_urls: set[str] = set()
-
-    session = requests.Session()
-
-    session.headers.update({
-
-        "User-Agent":
-            "Gunga-Job-Radar/1.0",
-
-        "Accept":
-            "application/json",
-
-    })
-
-    for keyword in keywords:
-
-        params = {
-
-            "q": keyword,
-
-            "worldwide": "true",
-
-            "sort": "recent",
-
-            "page": 1,
-
-        }
-
-        try:
-
-            response = session.get(
-                HIMALAYAS_API,
-                params=params,
-                timeout=REQUEST_TIMEOUT,
-            )
-
-            response.raise_for_status()
-
-            data = response.json()
-
-            raw_jobs = data.get(
-                "jobs",
-                [],
-            )
-
-            if not isinstance(
-                raw_jobs,
-                list,
-            ):
-
-                raw_jobs = []
-
-            for item in raw_jobs:
-
-                if not isinstance(
-                    item,
-                    dict,
-                ):
-
-                    continue
-
-                title = clean_text(
-                    item.get("title")
-                ).strip()
-
-                company = clean_text(
-                    item.get(
-                        "companyName"
-                    )
-                ).strip()
-
-                description = clean_text(
-                    item.get(
-                        "description"
-                    )
-                    or item.get(
-                        "excerpt"
-                    )
-                ).strip()
-
-                application_url = clean_text(
-                    item.get(
-                        "applicationLink"
-                    )
-                ).strip()
-
-                guid = clean_text(
-                    item.get(
-                        "guid"
-                    )
-                ).strip()
-
-                source_url = (
-                    application_url
-                    or (
-                        "https://himalayas.app/jobs/"
-                        + guid
-                        if guid
-                        else ""
-                    )
-                )
-
-                if not source_url:
-
-                    continue
-
-                if source_url in seen_urls:
-
-                    continue
-
-                seen_urls.add(
-                    source_url
-                )
-
-                restrictions = (
-                    item.get(
-                        "locationRestrictions"
-                    )
-                    or []
-                )
-
-                if isinstance(
-                    restrictions,
-                    list,
-                ):
-
-                    location = ", ".join(
-                        clean_text(x)
-                        for x in restrictions
-                        if clean_text(x)
-                    )
-
-                else:
-
-                    location = clean_text(
-                        restrictions
-                    )
-
-                if not location:
-
-                    location = (
-                        "Remote / Worldwide"
-                    )
-
-                employment_type = clean_text(
-                    item.get(
-                        "employmentType"
-                    )
-                )
-
-                categories = (
-                    item.get(
-                        "categories"
-                    )
-                    or item.get(
-                        "category"
-                    )
-                    or []
-                )
-
-                category_text = clean_text(
-                    categories
-                )
-
-                min_salary = item.get(
-                    "minSalary"
-                )
-
-                max_salary = item.get(
-                    "maxSalary"
-                )
-
-                currency = clean_text(
-                    item.get(
-                        "currency"
-                    )
-                )
-
-                salary = ""
-
-                if (
-                    min_salary is not None
-                    and max_salary is not None
-                ):
-
-                    try:
-
-                        salary = (
-                            f"{currency} "
-                            f"{int(min_salary):,} - "
-                            f"{int(max_salary):,}"
-                        )
-
-                    except (
-                        TypeError,
-                        ValueError,
-                    ):
-
-                        salary = (
-                            f"{currency} "
-                            f"{min_salary} - "
-                            f"{max_salary}"
-                        )
-
-                full_description = "\n".join(
-
-                    part
-
-                    for part in [
-
-                        description,
-
-                        category_text,
-
-                        employment_type,
-
-                        salary,
-
-                    ]
-
-                    if part
-
-                )
-
-                posted_raw = (
-                    item.get("pubDate")
-                    or item.get("publishedAt")
-                    or item.get("postedAt")
-                    or item.get("createdAt")
-                )
-
-                posted_date = None
-
-                if posted_raw:
-
-                    try:
-
-                        posted_date = (
-                            datetime.fromisoformat(
-                                str(posted_raw)
-                                .replace(
-                                    "Z",
-                                    "+00:00",
-                                )
-                            )
-                            .date()
-                            .isoformat()
-                        )
-
-                    except ValueError:
-
-                        posted_date = None
-
-                jobs.append({
-
-                    "source":
-                        "Himalayas",
-
-                    "source_url":
-                        source_url,
-
-                    "title":
-                        title
-                        or "Untitled",
-
-                    "company":
-                        company
-                        or "Unknown",
-
-                    "location":
-                        location,
-
-                    "description":
-                        full_description,
-
-                    "employment_type":
-                        employment_type,
-
-                    "posted_date":
-                        posted_date,
-
-                })
-
-        except requests.RequestException as exc:
-
-            logger.warning(
-                "Himalayas request failed "
-                "for '%s': %s",
-                keyword,
-                exc,
-            )
-
-        except ValueError as exc:
-
-            logger.warning(
-                "Invalid JSON returned by "
-                "Himalayas for '%s': %s",
-                keyword,
-                exc,
-            )
-
-        time.sleep(
-            HIMALAYAS_REQUEST_DELAY
-        )
-
-    logger.info(
-        "Himalayas returned %d unique jobs",
-        len(jobs),
-    )
-
-    return jobs
-
-
-# ============================================================
-# MYJOBMAG COLLECTOR
-# ============================================================
-
-MONTHS_PATTERN = (
-    "January|February|March|April|May|June|"
-    "July|August|September|October|November|December"
-)
-
-DATE_RE = re.compile(
-    r"\b\d{1,2}\s+(?:" + MONTHS_PATTERN + r")\b"
-)
-
-MONTH_NUMBERS = {
-
-    name: index
-
-    for index, name in enumerate(
-        MONTHS_PATTERN.split("|"),
-        start=1,
-    )
-
+function daysAgoLabel(dateStr) {
+  if (!dateStr) return null;
+  const posted = new Date(dateStr + "T00:00:00");
+  const diffDays = Math.max(0, Math.round((Date.now() - posted.getTime()) / 86400000));
+  if (diffDays === 0) return "posted today";
+  if (diffDays === 1) return "posted 1d ago";
+  return `posted ${diffDays}d ago`;
 }
 
-
-def parse_myjobmag_posted_date(
-    posted_text: str,
-) -> str | None:
-    """Convert MyJobMag's "28 August" style date to ISO.
-
-    MyJobMag omits the year, so we assume the current year
-    unless that would place the date in the future (which
-    means it was actually posted last year).
-    """
-
-    if not posted_text:
-        return None
-
-    match = re.match(
-        r"(\d{1,2})\s+(\w+)",
-        posted_text.strip(),
-    )
-
-    if not match:
-        return None
-
-    day_str, month_name = match.groups()
-
-    month = MONTH_NUMBERS.get(
-        month_name
-    )
-
-    if not month:
-        return None
-
-    today = date.today()
-
-    try:
-
-        candidate = date(
-            today.year,
-            month,
-            int(day_str),
-        )
-
-    except ValueError:
-
-        return None
-
-    if candidate > today:
-
-        try:
-
-            candidate = date(
-                today.year - 1,
-                month,
-                int(day_str),
-            )
-
-        except ValueError:
-
-            return None
-
-    return candidate.isoformat()
-
-
-def parse_myjobmag_page(
-    html: str,
-) -> list[dict[str, Any]]:
-    """Parse one MyJobMag category page into raw job dicts.
-
-    MyJobMag renders each listing's job title as a heading
-    (h2/h3) wrapping a link to /job/<slug>. Sidebar links
-    ("Current Jobs", "You May Like") are plain <a> tags with
-    no wrapping heading, so anchoring on headings keeps this
-    scoped to the actual listings and skips the sidebar noise.
-    """
-
-    soup = BeautifulSoup(
-        html,
-        "html.parser",
-    )
-
-    results: list[dict[str, Any]] = []
-
-    seen_hrefs: set[str] = set()
-
-    for heading in soup.find_all(
-        ["h2", "h3"]
-    ):
-
-        link = heading.find(
-            "a",
-            href=True,
-        )
-
-        if not link:
-            continue
-
-        href = link["href"]
-
-        if "/job/" not in href:
-            continue
-
-        if href.startswith("/"):
-            href = (
-                "https://www.myjobmag.co.ke"
-                + href
-            )
-
-        if href in seen_hrefs:
-            continue
-
-        seen_hrefs.add(href)
-
-        heading_text = clean_text(
-            link.get_text()
-        ).strip()
-
-        # Titles are formatted "<Title> at <Company>"
-        if " at " in heading_text:
-
-            title, _, company = (
-                heading_text.rpartition(
-                    " at "
-                )
-            )
-
-        else:
-
-            title, company = (
-                heading_text,
-                "Unknown",
-            )
-
-        container = (
-            heading.find_parent("li")
-            or heading.find_parent("div")
-            or heading
-        )
-
-        container_text = " ".join(
-            container.get_text(
-                separator=" "
-            ).split()
-        )
-
-        location_link = container.find(
-            "a",
-            href=lambda h: bool(h) and (
-                "/jobs-location/" in h
-            ),
-        )
-
-        location = (
-            clean_text(
-                location_link.get_text()
-            ).strip()
-            if location_link
-            else ""
-        )
-
-        date_match = DATE_RE.search(
-            container_text
-        )
-
-        posted = (
-            date_match.group(0)
-            if date_match
-            else ""
-        )
-
-        description = container_text
-
-        for fragment in (
-            heading_text,
-            location,
-            posted,
-        ):
-
-            if fragment:
-
-                description = (
-                    description.replace(
-                        fragment,
-                        " ",
-                    )
-                )
-
-        description = normalize_text(
-            description
-        )
-
-        results.append({
-
-            "source":
-                "MyJobMag",
-
-            "source_url":
-                href,
-
-            "title":
-                title.strip()
-                or "Untitled",
-
-            "company":
-                company.strip()
-                or "Unknown",
-
-            "location":
-                location
-                or "Kenya",
-
-            "description":
-                (
-                    description
-                    + (
-                        f" posted {posted}"
-                        if posted
-                        else ""
-                    )
-                ),
-
-            "employment_type":
-                "",
-
-            "posted_date":
-                parse_myjobmag_posted_date(
-                    posted
-                ),
-
-        })
-
-    return results
-
-
-def fetch_myjobmag_jobs() -> list[
-    dict[str, Any]
-]:
-
-    logger.info(
-        "Fetching jobs from MyJobMag..."
-    )
-
-    jobs: list[dict[str, Any]] = []
-
-    seen_urls: set[str] = set()
-
-    session = requests.Session()
-
-    session.headers.update({
-
-        "User-Agent":
-            "Mozilla/5.0 (compatible; "
-            "Gunga-Job-Radar/1.0)",
-
-        "Accept":
-            "text/html",
-
-    })
-
-    for category_url in (
-        MYJOBMAG_CATEGORY_URLS
-    ):
-
-        for page in range(
-            1,
-            MYJOBMAG_MAX_PAGES + 1,
-        ):
-
-            url = (
-                category_url
-                if page == 1
-                else f"{category_url}/{page}"
-            )
-
-            try:
-
-                response = session.get(
-                    url,
-                    timeout=REQUEST_TIMEOUT,
-                )
-
-                if response.status_code == 404:
-                    break
-
-                response.raise_for_status()
-
-                page_jobs = parse_myjobmag_page(
-                    response.text
-                )
-
-                if not page_jobs:
-                    break
-
-                new_on_page = 0
-
-                for job in page_jobs:
-
-                    if job["source_url"] in seen_urls:
-                        continue
-
-                    seen_urls.add(
-                        job["source_url"]
-                    )
-
-                    jobs.append(job)
-
-                    new_on_page += 1
-
-                # Ran into a page of jobs we've already
-                # seen (categories overlap) — stop paging.
-                if new_on_page == 0:
-                    break
-
-            except requests.RequestException as exc:
-
-                logger.warning(
-                    "MyJobMag request failed "
-                    "for '%s': %s",
-                    url,
-                    exc,
-                )
-
-                break
-
-            time.sleep(
-                MYJOBMAG_REQUEST_DELAY
-            )
-
-    logger.info(
-        "MyJobMag returned %d unique jobs",
-        len(jobs),
-    )
-
-    return jobs
-
-
-# ============================================================
-# BRIGHTERMONDAY COLLECTOR
-# ============================================================
-
-POSTED_RELATIVE_RE = re.compile(
-    r"\b(Today|Yesterday|\d+\s+"
-    r"(?:day|days|week|weeks|month|months)"
-    r"\s+ago)\b",
-    re.IGNORECASE,
-)
-
-
-def parse_brightermonday_posted(
-    text: str,
-) -> str | None:
-    """Convert "3 days ago" / "Today" style text to an ISO date."""
-
-    match = POSTED_RELATIVE_RE.search(
-        text
-    )
-
-    if not match:
-        return None
-
-    phrase = match.group(1).lower()
-
-    today = date.today()
-
-    if phrase == "today":
-
-        return today.isoformat()
-
-    if phrase == "yesterday":
-
-        return (
-            today
-            - timedelta(days=1)
-        ).isoformat()
-
-    number_match = re.match(
-        r"(\d+)\s+(day|week|month)",
-        phrase,
-    )
-
-    if not number_match:
-        return None
-
-    amount = int(
-        number_match.group(1)
-    )
-
-    unit = number_match.group(2)
-
-    days = {
-
-        "day": amount,
-
-        "week": amount * 7,
-
-        "month": amount * 30,
-
-    }[unit]
-
-    return (
-        today
-        - timedelta(days=days)
-    ).isoformat()
-
-
-def parse_brightermonday_page(
-    html: str,
-) -> list[dict[str, Any]]:
-    """Parse one BrighterMonday category page into raw job dicts.
-
-    Job listings link to /listings/<slug>. That href pattern is
-    unique to actual job cards — sidebar filter links, pagination,
-    and company-profile links all use different paths — so
-    anchoring on it (rather than guessing CSS classes we can't
-    see) keeps this scoped correctly.
-    """
-
-    soup = BeautifulSoup(
-        html,
-        "html.parser",
-    )
-
-    results: list[dict[str, Any]] = []
-
-    seen_hrefs: set[str] = set()
-
-    for link in soup.find_all(
-        "a",
-        href=True,
-    ):
-
-        href = link["href"]
-
-        if "/listings/" not in href:
-            continue
-
-        if href.startswith("/"):
-            href = (
-                "https://www.brightermonday.co.ke"
-                + href
-            )
-
-        href = href.split("?")[0]
-
-        if href in seen_hrefs:
-            continue
-
-        title = clean_text(
-            link.get_text()
-        ).strip()
-
-        if not title:
-            continue
-
-        seen_hrefs.add(href)
-
-        container = (
-            link.find_parent("li")
-            or link.find_parent("article")
-            or link.find_parent("div")
-            or link
-        )
-
-        container_text = " ".join(
-            container.get_text(
-                separator=" "
-            ).split()
-        )
-
-        remainder = container_text.replace(
-            title,
-            " ",
-            1,
-        )
-
-        location = "Kenya"
-
-        location_start = len(
-            remainder
-        )
-
-        for candidate in (
-            BRIGHTERMONDAY_LOCATIONS
-        ):
-
-            idx = remainder.find(
-                candidate
-            )
-
-            if idx != -1 and idx < location_start:
-
-                location_start = idx
-
-                location = (
-                    "Remote"
-                    if "Remote" in candidate
-                    else candidate
-                )
-
-        company = remainder[
-            :location_start
-        ].strip(
-            " -|"
-        )
-
-        if (
-            not company
-            or len(company) > 80
-        ):
-
-            company = "Unknown"
-
-        posted_date = (
-            parse_brightermonday_posted(
-                container_text
-            )
-        )
-
-        description = normalize_text(
-            remainder
-        )
-
-        results.append({
-
-            "source":
-                "BrighterMonday",
-
-            "source_url":
-                href,
-
-            "title":
-                title,
-
-            "company":
-                company,
-
-            "location":
-                location,
-
-            "description":
-                description,
-
-            "employment_type":
-                "",
-
-            "posted_date":
-                posted_date,
-
-        })
-
-    return results
-
-
-def fetch_brightermonday_jobs() -> list[
-    dict[str, Any]
-]:
-
-    logger.info(
-        "Fetching jobs from BrighterMonday..."
-    )
-
-    jobs: list[dict[str, Any]] = []
-
-    seen_urls: set[str] = set()
-
-    session = requests.Session()
-
-    session.headers.update({
-
-        "User-Agent":
-            "Mozilla/5.0 (compatible; "
-            "Gunga-Job-Radar/1.0)",
-
-        "Accept":
-            "text/html",
-
-    })
-
-    for category_url in (
-        BRIGHTERMONDAY_CATEGORY_URLS
-    ):
-
-        for page in range(
-            1,
-            BRIGHTERMONDAY_MAX_PAGES + 1,
-        ):
-
-            url = (
-                category_url
-                if page == 1
-                else f"{category_url}?page={page}"
-            )
-
-            try:
-
-                response = session.get(
-                    url,
-                    timeout=REQUEST_TIMEOUT,
-                )
-
-                if response.status_code == 404:
-                    break
-
-                response.raise_for_status()
-
-                page_jobs = (
-                    parse_brightermonday_page(
-                        response.text
-                    )
-                )
-
-                if not page_jobs:
-                    break
-
-                new_on_page = 0
-
-                for job in page_jobs:
-
-                    if job["source_url"] in seen_urls:
-                        continue
-
-                    seen_urls.add(
-                        job["source_url"]
-                    )
-
-                    jobs.append(job)
-
-                    new_on_page += 1
-
-                if new_on_page == 0:
-                    break
-
-            except requests.RequestException as exc:
-
-                logger.warning(
-                    "BrighterMonday request "
-                    "failed for '%s': %s",
-                    url,
-                    exc,
-                )
-
-                break
-
-            time.sleep(
-                BRIGHTERMONDAY_REQUEST_DELAY
-            )
-
-    logger.info(
-        "BrighterMonday returned %d "
-        "unique jobs",
-        len(jobs),
-    )
-
-    return jobs
-
-
-# ============================================================
-# MATCHING ENGINE
-# ============================================================
-
-def detect_employment_type(
-    job: dict[str, Any],
-    combined_text: str,
-) -> str:
-
-    explicit = clean_text(
-        job.get("employment_type")
-    ).strip()
-
-    if explicit:
-        return explicit
-
-    for term in EMPLOYMENT_TYPE_TERMS:
-
-        if term in combined_text:
-            return term
-
-    return ""
-
-
-def estimate_freshness_score(
-    posted_date: str | None,
-) -> tuple[int, str]:
-    """Score how recently a job was posted.
-
-    posted_date is an ISO ``YYYY-MM-DD`` string when known.
-    Missing dates get a small neutral score rather than being
-    punished, since not every source reliably exposes one.
-    """
-
-    if not posted_date:
-
-        return (
-            2,
-            "Posting date unknown",
-        )
-
-    try:
-
-        posted = date.fromisoformat(
-            posted_date
-        )
-
-    except ValueError:
-
-        return (
-            2,
-            "Posting date unknown",
-        )
-
-    age_days = (
-        date.today()
-        - posted
-    ).days
-
-    if age_days < 0:
-        age_days = 0
-
-    if age_days <= FRESHNESS_FULL_DAYS:
-
-        return (
-            WEIGHT_FRESHNESS,
-            f"Posted {age_days}d ago — fresh",
-        )
-
-    elif age_days <= FRESHNESS_PARTIAL_DAYS:
-
-        return (
-            3,
-            f"Posted {age_days}d ago",
-        )
-
-    return (
-        0,
-        f"Posted {age_days}d ago — stale",
-    )
-
-
-def score_job(
-    job: dict[str, Any],
-) -> tuple[
-    int,
-    str,
-    list[str],
-    list[str],
-    list[str],
-    list[str],
-    str,
-]:
-
-    title = normalize_text(
-        job.get("title")
-    )
-
-    location = normalize_text(
-        job.get("location")
-    )
-
-    description = normalize_text(
-        job.get("description")
-    )
-
-    combined = " ".join([
-        title,
-        location,
-        description,
-    ])
-
-    score = 0
-
-    reasons: list[str] = []
-
-    blockers: list[str] = []
-
-    matched_skills: list[str] = []
-
-    matched_locations: list[str] = []
-
-    # ========================================================
-    # LOCATION — 10%
-    # ========================================================
-
-    (
-        location_classification,
-        location_evidence,
-    ) = classify_location(job)
-
-    if location_classification in (
-        "KENYA",
-        "REMOTE-AFRICA",
-        "REMOTE-WORLDWIDE",
-    ):
-
-        score += WEIGHT_LOCATION
-
-        reasons.append(
-            ELIGIBILITY_LABELS[
-                location_classification
-            ]
-        )
-
-    elif location_classification == "REMOTE-RESTRICTED":
-
-        blockers.extend(
-            location_evidence
-        )
-
-        reasons.append(
-            "⚠️ Geographic restriction detected"
-        )
-
-    else:
-
-        score += 2
-
-        reasons.append(
-            "❓ Location eligibility unclear"
-        )
-
-    # ========================================================
-    # TITLE — 30%
-    # ========================================================
-
-    title_matches = [
-
-        role
-
-        for role in PROFILE[
-            "target_titles"
-        ]
-
-        if role in title
-
-    ]
-
-    if title_matches:
-
-        score += WEIGHT_TITLE
-
-        reasons.append(
-            "Title strongly matches a "
-            "target ICT role"
-        )
-
-    # ========================================================
-    # SKILLS — 25%
-    # ========================================================
-
-    for skill in PROFILE[
-        "skills"
-    ]:
-
-        if skill in combined:
-
-            matched_skills.append(
-                skill
-            )
-
-    skill_points = min(
-        len(matched_skills) * 5,
-        WEIGHT_SKILLS,
-    )
-
-    score += skill_points
-
-    if matched_skills:
-
-        reasons.append(
-            f"{len(matched_skills)} relevant "
-            "skill(s): "
-            + ", ".join(
-                matched_skills[:6]
-            )
-        )
-
-    # ========================================================
-    # EDUCATION — 15%
-    # ========================================================
-
-    education_terms = [
-
-        "diploma",
-        "certificate",
-
-        "entry level",
-        "entry-level",
-
-        "intern",
-        "internship",
-
-        "trainee",
-        "junior",
-
-        "graduate",
-
-        "attachment",
-
-        "no experience",
-
-        "no experience required",
-
-    ]
-
-    education_matches = [
-
-        term
-
-        for term in education_terms
-
-        if term in combined
-
-    ]
-
-    if education_matches:
-
-        score += WEIGHT_EDUCATION
-
-        reasons.append(
-            "Entry-level/diploma-friendly "
-            "language detected"
-        )
-
-    # ========================================================
-    # EXPERIENCE — 10%
-    # ========================================================
-
-    experience_terms = [
-
-        "junior",
-
-        "entry level",
-        "entry-level",
-
-        "intern",
-        "internship",
-
-        "trainee",
-
-        "graduate",
-
-        "no experience",
-
-        "no experience required",
-
-        "no experience necessary",
-
-    ]
-
-    if any(
-        term in combined
-        for term in experience_terms
-    ):
-
-        score += WEIGHT_EXPERIENCE
-
-        reasons.append(
-            "Experience requirements "
-            "appear suitable"
-        )
-
-    # ========================================================
-    # EMPLOYMENT TYPE — 5%
-    # ========================================================
-
-    employment_type = detect_employment_type(
-        job,
-        combined,
-    )
-
-    if employment_type:
-
-        score += WEIGHT_EMPLOYMENT_TYPE
-
-        reasons.append(
-            f"Employment type: {employment_type}"
-        )
-
-    # ========================================================
-    # FRESHNESS — 5%
-    # ========================================================
-
-    freshness_points, freshness_reason = (
-        estimate_freshness_score(
-            job.get("posted_date")
-        )
-    )
-
-    score += freshness_points
-
-    reasons.append(
-        freshness_reason
-    )
-
-    # ========================================================
-    # PREFERRED LOCATIONS (informational only)
-    # ========================================================
-
-    for preferred_location in PROFILE[
-        "locations_preferred"
-    ]:
-
-        if preferred_location in combined:
-
-            matched_locations.append(
-                preferred_location
-            )
-
-    if matched_locations:
-
-        reasons.append(
-            "Preferred location mentioned: "
-            + ", ".join(
-                matched_locations[:4]
-            )
-        )
-
-    # ========================================================
-    # NEGATIVES
-    # ========================================================
-
-    for blocker in PROFILE[
-        "soft_negatives"
-    ]:
-
-        if blocker in combined:
-
-            blockers.append(
-                blocker
-            )
-
-    score -= (
-        len(blockers) * 10
-    )
-
-    # ========================================================
-    # SCORE NORMALIZATION
-    # ========================================================
-
-    score = max(
-        0,
-        min(
-            100,
-            score,
-        ),
-    )
-
-    # ========================================================
-    # TIER
-    # ========================================================
-
-    if score >= STRONG_MATCH_THRESHOLD:
-
-        tier = "strong"
-
-    elif score >= CONSIDER_THRESHOLD:
-
-        tier = "consider"
-
-    else:
-
-        tier = "poor"
-
-    # A restricted job is never presented as a strong Kenya
-    # opportunity, regardless of how well everything else
-    # scores — the numeric score is still reported for
-    # transparency, but the tier (and therefore Telegram /
-    # digest grouping) is capped.
-    if location_classification == "REMOTE-RESTRICTED":
-
-        tier = "poor"
-
-    # ========================================================
-    # FINAL ELIGIBILITY REASON
-    # ========================================================
-
-    reasons.append(
-        "Eligibility: "
-        + location_classification
-    )
-
-    return (
-        score,
-        tier,
-        reasons,
-        blockers,
-        matched_skills,
-        matched_locations,
-        location_classification,
-    )
-
-
-# ============================================================
-# DATABASE
-# ============================================================
-
-def build_database() -> Database:
-
-    require_environment(
-        "DATABASE_URL"
-    )
-
-    return Database(
-        DATABASE_URL
-    )
-
-
-def save_job(
-    database: Database,
-    job: dict[str, Any],
-    score: int,
-    tier: str,
-    reasons: list[str],
-    blockers: list[str],
-    matched_skills: list[str],
-    matched_locations: list[str],
-    eligibility: str,
-) -> int | None:
-
-    payload = {
-
-        "source":
-            job["source"],
-
-        "source_url":
-            job["source_url"],
-
-        "title":
-            job["title"],
-
-        "company":
-            job["company"],
-
-        "location":
-            job["location"],
-
-        "description":
-            job["description"][:10000],
-
-        "score":
-            score,
-
-        "tier":
-            tier,
-
-        "reasons":
-            "; ".join(
-                reasons
-            ),
-
-        "blockers":
-            "; ".join(
-                blockers
-            ),
-
-        "eligibility":
-            eligibility,
-
-        "employment_type":
-            job.get("employment_type")
-            or None,
-
-        "posted_date":
-            job.get("posted_date"),
-
-    }
-
-    return database.insert_job(
-        payload
-    )
-
-
-# ============================================================
-# TELEGRAM
-# ============================================================
-
-def send_telegram_alert(
-    job: dict[str, Any],
-    score: int,
-    reasons: list[str],
-    eligibility: str = "UNKNOWN",
-) -> bool:
-
-    require_environment(
-        "TELEGRAM_BOT_TOKEN",
-        "TELEGRAM_CHAT_ID",
-    )
-
-    eligibility_label = ELIGIBILITY_LABELS.get(
-        eligibility,
-        "❓ LOCATION UNCLEAR",
-    )
-
-    # Telegram's HTML parse mode needs these escaped, since
-    # titles/companies/locations come from scraped job text.
-    safe_title = html.escape(
-        str(job.get("title", ""))
-    )
-
-    safe_company = html.escape(
-        str(job.get("company", ""))
-    )
-
-    safe_location = html.escape(
-        str(job.get("location", ""))
-    )
-
-    safe_url = html.escape(
-        str(job.get("source_url", "")),
-        quote=True,
-    )
-
-    reasons_block = (
-        "\n".join(
-            f"• {html.escape(reason)}"
-            for reason in reasons
-            if not reason.startswith("Eligibility:")
-            and reason != eligibility_label
-        )
-        if reasons
-        else "• Good overall fit"
-    )
-
-    message = (
-        f"{eligibility_label}\n"
-
-        f"🎯 MATCH: {score}%\n\n"
-
-        f"💼 {safe_title}\n"
-
-        f"🏢 {safe_company}\n"
-
-        f"📍 {safe_location}\n\n"
-
-        "Why it matches:\n"
-
-        f"{reasons_block}\n\n"
-
-        f'🔗 <a href="{safe_url}">Apply</a>'
-    )
-
-    telegram_url = (
-        "https://api.telegram.org/bot"
-        f"{TELEGRAM_BOT_TOKEN}"
-        "/sendMessage"
-    )
-
-    response = requests.post(
-
-        telegram_url,
-
-        data={
-
-            "chat_id":
-                TELEGRAM_CHAT_ID,
-
-            "text":
-                message,
-
-            "parse_mode":
-                "HTML",
-
-            "disable_web_page_preview":
-                False,
-
-        },
-
-        timeout=30,
-
-    )
-
-    response.raise_for_status()
-
-    result = response.json()
-
-    if not result.get(
-        "ok",
-        False,
-    ):
-
-        raise RuntimeError(
-            "Telegram rejected message: "
-            f"{result}"
-        )
-
-    return True
-
-
-# ============================================================
-# GMAIL DIGEST
-# ============================================================
-
-def send_gmail_digest(
-    jobs: list[dict[str, Any]],
-) -> bool:
-
-    if not jobs:
-
-        logger.info(
-            "No undigested jobs. "
-            "Skipping Gmail digest."
-        )
-
-        return False
-
-    require_environment(
-        "GMAIL_ADDRESS",
-        "GMAIL_APP_PASSWORD",
-    )
-
-    strong = [
-
-        job
-
-        for job in jobs
-
-        if job["tier"] == "strong"
-
-    ]
-
-    consider = [
-
-        job
-
-        for job in jobs
-
-        if job["tier"] == "consider"
-
-    ]
-
-    poor = [
-
-        job
-
-        for job in jobs
-
-        if job["tier"] == "poor"
-
-    ]
-
-    lines = [
-
-        "GUNGA JOB RADAR",
-
-        "",
-
-        (
-            f"{len(jobs)} new jobs "
-            "since the last digest."
-        ),
-
-        "",
-
-        f"🟢 Strong matches: {len(strong)}",
-
-        (
-            f"🟡 Worth considering: "
-            f"{len(consider)}"
-        ),
-
-        f"🔴 Poor matches: {len(poor)}",
-
-        "",
-
-    ]
-
-    groups = [
-
-        (
-            "🟢 STRONG MATCHES",
-            strong,
-        ),
-
-        (
-            "🟡 WORTH CONSIDERING",
-            consider,
-        ),
-
-    ]
-
-    for heading, group in groups:
-
-        if not group:
-
-            continue
-
-        lines.extend([
-
-            "",
-
-            "=" * 50,
-
-            heading,
-
-            "=" * 50,
-
-        ])
-
-        for job in sorted(
-
-            group,
-
-            key=lambda item:
-                -int(
-                    item["score"]
-                    or 0
-                ),
-
-        ):
-
-            lines.extend([
-
-                "",
-
-                (
-                    f"{job['score']}% — "
-                    f"{job['title']}"
-                ),
-
-                (
-                    f"Company: "
-                    f"{job['company']}"
-                ),
-
-                (
-                    f"Location: "
-                    f"{job['location']}"
-                ),
-
-                (
-                    f"Apply: "
-                    f"{job['source_url']}"
-                ),
-
-            ])
-
-    body = "\n".join(
-        lines
-    )
-
-    message = MIMEMultipart()
-
-    message["From"] = (
-        GMAIL_ADDRESS
-    )
-
-    message["To"] = (
-        GMAIL_ADDRESS
-    )
-
-    message["Subject"] = (
-        "Gunga Job Radar — "
-        f"{len(jobs)} new jobs"
-    )
-
-    message.attach(
-        MIMEText(
-            body,
-            "plain",
-            "utf-8",
-        )
-    )
-
-    with smtplib.SMTP(
-        "smtp.gmail.com",
-        587,
-        timeout=30,
-    ) as server:
-
-        server.starttls()
-
-        server.login(
-            GMAIL_ADDRESS,
-            GMAIL_APP_PASSWORD,
-        )
-
-        server.send_message(
-            message
-        )
-
-    logger.info(
-        "Gmail digest sent successfully."
-    )
-
-    return True
-
-
-# ============================================================
-# SCAN
-# ============================================================
-
-def run_scan(
-    database: Database,
-) -> None:
-
-    logger.info(
-        "========== SCAN START =========="
-    )
-
-    himalayas_jobs = fetch_himalayas_jobs()
-
-    myjobmag_jobs = fetch_myjobmag_jobs()
-
-    brightermonday_jobs = fetch_brightermonday_jobs()
-
-    jobs = (
-        himalayas_jobs
-        + myjobmag_jobs
-        + brightermonday_jobs
-    )
-
-    logger.info(
-        "Processing %d jobs "
-        "(%d Himalayas, %d MyJobMag, "
-        "%d BrighterMonday)...",
-        len(jobs),
-        len(himalayas_jobs),
-        len(myjobmag_jobs),
-        len(brightermonday_jobs),
-    )
-
-    jobs_fetched = len(jobs)
-    jobs_processed = 0
-    jobs_new = 0
-    strong_matches = 0
-    consider_matches = 0
-    telegram_attempts = 0
-    telegram_sent = 0
-    telegram_failures = 0
-
-    for job in jobs:
-
-        source_url = job.get(
-            "source_url"
-        )
-
-        if not source_url:
-            continue
-
-        try:
-
-            # ================================================
-            # Score the job (both new and existing)
-            # ================================================
-
-            (
-                score,
-                tier,
-                reasons,
-                blockers,
-                matched_skills,
-                matched_locations,
-                eligibility,
-            ) = score_job(
-                job
-            )
-
-            # ================================================
-            # Attempt to insert/update in database
-            # ================================================
-
-            job_id = save_job(
-
-                database,
-
-                job,
-
-                score,
-
-                tier,
-
-                reasons,
-
-                blockers,
-
-                matched_skills,
-
-                matched_locations,
-
-                eligibility,
-
-            )
-
-            jobs_processed += 1
-
-            # If insert_job returned None, it was a duplicate.
-            # It may still be an un-alerted strong match from a
-            # scan where the Telegram send failed, so look it
-            # up and retry rather than skipping outright.
-            if job_id is None:
-
-                logger.info(
-                    "JOB DUPLICATE | %s | %s%%",
-                    job["title"],
-                    score,
-                )
-
-                existing = database.get_job_by_url(
-                    source_url
-                )
-
-                if (
-                    existing
-                    and existing["tier"] == "strong"
-                    and not existing["telegram_sent"]
-                ):
-
-                    telegram_attempts += 1
-
-                    try:
-
-                        send_telegram_alert(
-                            job,
-                            existing["score"],
-                            reasons,
-                            eligibility,
-                        )
-
-                        database.mark_telegram_sent(
-                            existing["id"]
-                        )
-
-                        telegram_sent += 1
-
-                        logger.info(
-                            "Telegram alert "
-                            "(retry) sent for "
-                            "job %s",
-                            existing["id"],
-                        )
-
-                    except Exception as exc:
-
-                        telegram_failures += 1
-
-                        logger.error(
-                            "Telegram retry failed "
-                            "for job %s: %s",
-                            existing["id"],
-                            exc,
-                        )
-
-                continue
-
-            # New job was inserted
-            jobs_new += 1
-
-            logger.info(
-
-                "NEW JOB | %s | %s%% | %s",
-
-                job["title"],
-
-                score,
-
-                tier,
-
-            )
-
-            # ================================================
-            # Handle strong matches
-            # ================================================
-
-            if tier == "strong":
-
-                strong_matches += 1
-
-                telegram_attempts += 1
-
-                try:
-
-                    send_telegram_alert(
-
-                        job,
-
-                        score,
-
-                        reasons,
-
-                        eligibility,
-
-                    )
-
-                    database.mark_telegram_sent(
-                        job_id
-                    )
-
-                    telegram_sent += 1
-
-                    logger.info(
-
-                        "Telegram alert sent "
-                        "for job %s",
-
-                        job_id,
-
-                    )
-
-                except Exception as exc:
-
-                    telegram_failures += 1
-
-                    logger.error(
-
-                        "Telegram alert failed "
-                        "for job %s: %s",
-
-                        job_id,
-
-                        exc,
-
-                    )
-
-            elif tier == "consider":
-
-                consider_matches += 1
-
-        except DatabaseError as exc:
-
-            logger.error(
-
-                "Database error processing "
-                "%s: %s",
-
-                source_url,
-
-                exc,
-
-            )
-
-        except Exception as exc:
-
-            logger.exception(
-
-                "Unexpected error processing job: %s",
-
-                exc,
-
-            )
-
-    logger.info("")
-    logger.info(
-        "========== SCAN METRICS =========="
-    )
-    logger.info(
-        "Jobs fetched: %d",
-        jobs_fetched,
-    )
-    logger.info(
-        "Jobs processed: %d",
-        jobs_processed,
-    )
-    logger.info(
-        "New jobs saved: %d",
-        jobs_new,
-    )
-    logger.info(
-        "Strong matches: %d",
-        strong_matches,
-    )
-    logger.info(
-        "Consider matches: %d",
-        consider_matches,
-    )
-    logger.info(
-        "Telegram attempts: %d",
-        telegram_attempts,
-    )
-    logger.info(
-        "Telegram sent: %d",
-        telegram_sent,
-    )
-    logger.info(
-        "Telegram failures: %d",
-        telegram_failures,
-    )
-    logger.info(
-        "========== SCAN COMPLETE =========="
-    )
-
-
-# ============================================================
-# DIGEST
-# ============================================================
-
-def run_digest(
-    database: Database,
-) -> None:
-
-    logger.info(
-        "========== DIGEST START =========="
-    )
-
-    jobs = database.get_undigested_jobs()
-
-    logger.info(
-        "%d jobs pending digest",
-        len(jobs),
-    )
-
-    if not jobs:
-
-        logger.info(
-            "Nothing to send."
-        )
-
-        logger.info(
-            "========== DIGEST COMPLETE =========="
-        )
-
-        return
-
-    try:
-
-        send_gmail_digest(
-            jobs
-        )
-
-        job_ids = [
-
-            int(job["id"])
-
-            for job in jobs
-
-            if job.get("id") is not None
-
-        ]
-
-        database.mark_jobs_digested(
-            job_ids
-        )
-
-        logger.info(
-            "Marked %d jobs as digested.",
-            len(job_ids),
-        )
-
-    except Exception as exc:
-
-        logger.exception(
-
-            "Digest failed. "
-            "Jobs were NOT marked "
-            "as digested: %s",
-
-            exc,
-
-        )
-
-        raise
-
-    logger.info(
-        "========== DIGEST COMPLETE =========="
-    )
-
-
-# ============================================================
-# MAIN
-# ============================================================
-
-def main() -> int:
-
-    parser = argparse.ArgumentParser(
-
-        description=(
-            "Gunga Job Radar"
-        )
-
-    )
-
-    parser.add_argument(
-
-        "--mode",
-
-        choices=[
-            "scan",
-            "digest",
-            "both",
-        ],
-
-        default="both",
-
-        help=(
-            "Operation to run."
-        ),
-
-    )
-
-    args = parser.parse_args()
-
-    logger.info(
-
-        "Starting Gunga Job Radar "
-        "in %s mode...",
-
-        args.mode,
-
-    )
-
-    database = build_database()
-
-    try:
-
-        if args.mode in (
-            "scan",
-            "both",
-        ):
-
-            run_scan(
-                database
-            )
-
-        if args.mode in (
-            "digest",
-            "both",
-        ):
-
-            run_digest(
-                database
-            )
-
-    except Exception as exc:
-
-        logger.exception(
-            "Fatal error: %s",
-            exc,
-        )
-
-        return 1
-
-    logger.info(
-        "Gunga Job Radar finished successfully."
-    )
-
-    return 0
-
-
-# ============================================================
-# ENTRY POINT
-# ============================================================
-
-if __name__ == "__main__":
-
-    raise SystemExit(
-        main()
-)
+function buildBaseQuery(countOnly = false) {
+  let query = supabase
+    .from("jobs")
+    .select(
+      countOnly
+        ? "id"
+        : "id, source, source_url, title, company, location, score, tier, eligibility, employment_type, posted_date, reasons, applied, applied_at, created_at",
+      countOnly ? { count: "exact", head: true } : { count: "exact" }
+    );
+
+  const f = state.filters;
+
+  if (f.search.trim()) {
+    const term = f.search.trim().replace(/[%_]/g, "");
+    query = query.or(`title.ilike.%${term}%,company.ilike.%${term}%`);
+  }
+
+  if (f.location.trim()) {
+    const term = f.location.trim().replace(/[%_]/g, "");
+    query = query.ilike("location", `%${term}%`);
+  }
+
+  if (f.eligibility !== "all") {
+    query = query.eq("eligibility", f.eligibility);
+  }
+
+  if (f.tier !== "all") {
+    query = query.eq("tier", f.tier);
+  }
+
+  if (f.source !== "all") {
+    query = query.eq("source", f.source);
+  }
+
+  if (f.applied !== "all") {
+    query = query.eq("applied", f.applied === "true");
+  }
+
+  return query;
+}
+
+async function refreshStats() {
+  const [{ count: total }, { count: strong }, { count: applied }] = await Promise.all([
+    supabase.from("jobs").select("id", { count: "exact", head: true }),
+    supabase.from("jobs").select("id", { count: "exact", head: true }).eq("tier", "strong"),
+    supabase.from("jobs").select("id", { count: "exact", head: true }).eq("applied", true),
+  ]);
+
+  document.getElementById("statTotal").textContent = total ?? "—";
+  document.getElementById("statStrong").textContent = strong ?? "—";
+  document.getElementById("statApplied").textContent = applied ?? "—";
+}
+
+function renderCard(job) {
+  const el = document.createElement("div");
+  el.className = `job-card tier-${job.tier}`;
+  if (job.eligibility === "REMOTE-RESTRICTED") el.classList.add("elig-restricted");
+  if (job.applied) el.classList.add("is-applied");
+  el.dataset.jobId = job.id;
+
+  const elig = ELIGIBILITY_LABELS[job.eligibility] || ELIGIBILITY_LABELS["UNKNOWN"];
+  const posted = daysAgoLabel(job.posted_date);
+
+  const reasonItems = (job.reasons || "")
+    .split(";")
+    .map(r => r.trim())
+    .filter(r => r && !r.startsWith("Eligibility:"));
+
+  el.innerHTML = `
+    <div class="job-top">
+      <div>
+        <p class="job-title">${escapeHtml(job.title)}</p>
+        <div class="job-company">${escapeHtml(job.company)} · ${escapeHtml(job.location || "—")}</div>
+      </div>
+      <div class="job-score">${job.score}%</div>
+    </div>
+    <div class="badge-row">
+      <span class="badge ${elig.class}">${elig.text}</span>
+      <span class="badge">${escapeHtml(job.source)}</span>
+      ${job.employment_type ? `<span class="badge">${escapeHtml(job.employment_type)}</span>` : ""}
+      ${posted ? `<span class="badge">${posted}</span>` : ""}
+    </div>
+    ${reasonItems.length ? `
+    <details class="reasons">
+      <summary>Why it matches (${reasonItems.length})</summary>
+      <ul>${reasonItems.map(r => `<li>${escapeHtml(r)}</li>`).join("")}</ul>
+    </details>` : ""}
+    <div class="job-actions">
+      <a class="btn apply-link" href="${escapeHtml(job.source_url)}" target="_blank" rel="noopener">🔗 Apply</a>
+      <button class="btn mark-applied ${job.applied ? "done" : ""}" data-applied="${job.applied}">
+        ${job.applied ? "✓ Applied" : "Mark applied"}
+      </button>
+      ${job.applied && job.applied_at ? `<span class="applied-note">on ${new Date(job.applied_at).toLocaleDateString()}</span>` : ""}
+    </div>
+  `;
+
+  el.querySelector(".mark-applied").addEventListener("click", (e) => toggleApplied(job, el, e.currentTarget));
+
+  return el;
+}
+
+async function toggleApplied(job, cardEl, buttonEl) {
+  const nextApplied = !(buttonEl.dataset.applied === "true");
+
+  buttonEl.disabled = true;
+
+  const { error } = await supabase.rpc("mark_job_applied", {
+    p_job_id: job.id,
+    p_applied: nextApplied,
+  });
+
+  buttonEl.disabled = false;
+
+  if (error) {
+    console.error(error);
+    buttonEl.textContent = "Error — retry";
+    return;
+  }
+
+  job.applied = nextApplied;
+  buttonEl.dataset.applied = String(nextApplied);
+  buttonEl.textContent = nextApplied ? "✓ Applied" : "Mark applied";
+  buttonEl.classList.toggle("done", nextApplied);
+  cardEl.classList.toggle("is-applied", nextApplied);
+
+  const existingNote = cardEl.querySelector(".applied-note");
+  if (existingNote) existingNote.remove();
+
+  if (nextApplied) {
+    const note = document.createElement("span");
+    note.className = "applied-note";
+    note.textContent = `on ${new Date().toLocaleDateString()}`;
+    cardEl.querySelector(".job-actions").appendChild(note);
+  }
+
+  refreshStats();
+}
+
+async function loadJobs(reset) {
+  if (state.loading) return;
+  state.loading = true;
+
+  if (reset) {
+    state.page = 0;
+    state.reachedEnd = false;
+    document.getElementById("jobList").innerHTML = "";
+  }
+
+  document.getElementById("emptyState").style.display = "none";
+  document.getElementById("errorState").style.display = "none";
+  document.getElementById("loadMoreBtn").textContent = "Loading…";
+  document.getElementById("loadMoreBtn").disabled = true;
+
+  const sortMap = {
+    score_desc: ["score", { ascending: false }],
+    posted_desc: ["posted_date", { ascending: false, nullsFirst: false }],
+    created_desc: ["created_at", { ascending: false }],
+  };
+  const [sortCol, sortOpts] = sortMap[state.filters.sort];
+
+  const from = state.page * PAGE_SIZE;
+  const to = from + PAGE_SIZE - 1;
+
+  const { data, error, count } = await buildBaseQuery()
+    .order(sortCol, sortOpts)
+    .range(from, to);
+
+  state.loading = false;
+
+  if (error) {
+    console.error(error);
+    document.getElementById("errorState").style.display = "block";
+    document.getElementById("errorState").textContent = "⚠ Couldn't reach the database — check your Supabase config and RLS policy.";
+    document.getElementById("loadMoreBtn").classList.add("hidden");
+    return;
+  }
+
+  const list = document.getElementById("jobList");
+  data.forEach(job => list.appendChild(renderCard(job)));
+
+  document.getElementById("status-line").textContent =
+    `Showing ${list.children.length} of ${count ?? "?"} contacts`;
+
+  if (list.children.length === 0) {
+    document.getElementById("emptyState").style.display = "block";
+  }
+
+  state.reachedEnd = data.length < PAGE_SIZE;
+  state.page += 1;
+
+  const loadMoreBtn = document.getElementById("loadMoreBtn");
+  loadMoreBtn.disabled = false;
+  loadMoreBtn.textContent = "Load more";
+  loadMoreBtn.classList.toggle("hidden", state.reachedEnd);
+}
+
+function debounce(fn, ms) {
+  let t;
+  return (...args) => {
+    clearTimeout(t);
+    t = setTimeout(() => fn(...args), ms);
+  };
+}
+
+function wireControls() {
+  document.getElementById("search").addEventListener("input", debounce(e => {
+    state.filters.search = e.target.value;
+    loadJobs(true);
+  }, 350));
+
+  document.getElementById("locationFilter").addEventListener("input", debounce(e => {
+    state.filters.location = e.target.value;
+    loadJobs(true);
+  }, 350));
+
+  ["eligibilityFilter", "tierFilter", "sourceFilter", "appliedFilter", "sortFilter"].forEach(id => {
+    document.getElementById(id).addEventListener("change", e => {
+      const key = id.replace("Filter", "");
+      state.filters[key === "eligibility" ? "eligibility" : key] = e.target.value;
+      loadJobs(true);
+    });
+  });
+
+  document.getElementById("loadMoreBtn").addEventListener("click", () => loadJobs(false));
+}
+
+async function init() {
+  if (!isConfigured()) {
+    document.getElementById("setupScreen").classList.remove("hidden");
+    return;
+  }
+
+  supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  document.getElementById("app").classList.remove("hidden");
+
+  wireControls();
+  await refreshStats();
+  await loadJobs(true);
+}
+
+init();
+</script>
+
+</body>
+</html>
