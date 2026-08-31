@@ -13,6 +13,16 @@ on:
           - digest
           - both
 
+  schedule:
+    # Scan for new jobs every 6 hours (03:00 / 09:00 / 15:00 /
+    # 21:00 EAT — Kenya is UTC+3). GitHub may delay scheduled
+    # runs by a few minutes during high platform load; that's
+    # normal and not a sign anything is broken.
+    - cron: "0 */6 * * *"
+
+    # Daily Gmail digest at ~07:00 EAT
+    - cron: "0 4 * * *"
+
 jobs:
   job-radar:
     runs-on: ubuntu-latest
@@ -31,6 +41,17 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Determine run mode
+        id: mode
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "mode=${{ inputs.mode }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event.schedule }}" = "0 4 * * *" ]; then
+            echo "mode=digest" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=scan" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Run Gunga Job Radar
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
@@ -39,5 +60,5 @@ jobs:
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
         run: |
-          echo "Running Gunga Job Radar in ${{ inputs.mode }} mode..."
-          python job_radar.py --mode "${{ inputs.mode }}"
+          echo "Running Gunga Job Radar in ${{ steps.mode.outputs.mode }} mode (triggered by ${{ github.event_name }})..."
+          python job_radar.py --mode "${{ steps.mode.outputs.mode }}"
