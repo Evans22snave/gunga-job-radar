@@ -579,27 +579,17 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
 // CONFIG — fill these in from Supabase → Project Settings → API
 // ============================================================
 const SUPABASE_URL = "https://vaymtujfjneynnsckeng.supabase.co";
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZheW10dWpmam5leW5uc2NrZW5nIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc3ODY2NTgsImV4cCI6MjEwMzM2MjY1OH0.BATCilwQKvqqptenIdhbDImuuYncbzUywg72Wa3DeXo";
+const SUPABASE_ANON_KEY = "EyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZheW10dWpmam5leW5uc2NrZW5nIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc3ODY2NTgsImV4cCI6MjEwMzM2MjY1OH0.BATCilwQKvqqptenIdhbDImuuYncbzUywg72Wa3DeXo";
 
-// From https://aistudio.google.com/apikey — free tier, no billing.
-// Only needed for the "Cover Letter" button; "Align Resume" and
-// everything else on this page works without it.
-const GEMINI_API_KEY = "AQ.Ab8RN6Kl1MQsI4ELqT28NK5gIQUNArk93P0kBIl5jq9ewWHzew";
+// Gemini API Key from Google AI Studio
+const GEMINI_API_KEY = "AQ.Ab8RN6JSpRvmzYYDLYryB5NS4UaweIA_0_J4Hg-PtZl1Ci50Dw";
 
-// gemini-2.5-flash is the current stable free-tier model as of
-// August 2026. (An earlier "-latest" alias existed for this but
-// was deprecated — if this ever 404s, check
-// https://ai.google.dev/gemini-api/docs/models for the current
-// name and update it here.)
 const GEMINI_MODEL = "gemini-2.5-flash";
 
 // ============================================================
 // MASTER PROFILE — the single source of truth for the cover
 // letter and resume tools. Every fact here comes straight from
-// Evans's resume. Nothing here should ever be fabricated by the
-// AI — the cover letter generator is instructed to use ONLY
-// these facts, and "Align Resume" only reorders/re-emphasizes
-// this exact content, never invents new content.
+// Evans's resume.
 // ============================================================
 const MASTER_PROFILE = {
   name: "Evans Gunga Festus",
@@ -770,10 +760,7 @@ function setModalError(message) {
 }
 
 // ============================================================
-// RESUME ALIGNMENT — deterministic reordering only. Nothing
-// below this point invents content; it only re-sorts the exact
-// bullets/skills/projects already in MASTER_PROFILE based on
-// keyword overlap with the job description.
+// RESUME ALIGNMENT
 // ============================================================
 
 function extractJobKeywords(job) {
@@ -887,9 +874,7 @@ function showAlignedResume(job) {
 }
 
 // ============================================================
-// COVER LETTER — the only place an LLM is used. The prompt is
-// constrained to the facts in MASTER_PROFILE and explicitly
-// told not to invent anything beyond them.
+// COVER LETTER
 // ============================================================
 
 function buildCoverLetterPrompt(job) {
@@ -925,13 +910,13 @@ Write the cover letter now.`;
 }
 
 async function callGemini(prompt) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
+  // Appending API Key to URL query parameter to pass browser CORS/Auth restrictions
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
 
   const response = await fetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "x-goog-api-key": GEMINI_API_KEY,
     },
     body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }),
   });
@@ -955,7 +940,7 @@ async function showCoverLetter(job) {
   openModal(`Cover letter — ${job.title}`);
 
   if (!isGeminiConfigured()) {
-    setModalError('Gemini API key not set. Add GEMINI_API_KEY near the top of the <script> block (get one free at aistudio.google.com/apikey).');
+    setModalError('Gemini API key not set. Add GEMINI_API_KEY near the top of the <script> block.');
     return;
   }
 
@@ -987,8 +972,7 @@ async function showCoverLetter(job) {
 }
 
 // ============================================================
-// WORD EXPORT — HTML-wrapped .doc, which Word opens natively.
-// No external library needed, works fully offline/client-side.
+// WORD EXPORT
 // ============================================================
 
 function downloadAsWord(filename, bodyHtml) {
