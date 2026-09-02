@@ -579,7 +579,7 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
 // CONFIG — fill these in from Supabase → Project Settings → API
 // ============================================================
 const SUPABASE_URL = "https://vaymtujfjneynnsckeng.supabase.co";
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZheW10dWpmam5leW5uc2NrZW5nIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc3ODY2NTgsImV4cCI6MjEwMzM2MjY1OH0.BATCilwQKvqqptenIdhbDImuuYncbzUywg72Wa3DeXo";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZheW10dWpmam5leW5uc2NrZW5nIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc3ODY2NTgsImV4cCI6MjEwMzM";
 
 // From https://aistudio.google.com/apikey — free tier, no billing.
 // Only needed for the "Cover Letter" button; "Align Resume" and
@@ -925,11 +925,14 @@ Write the cover letter now.`;
 }
 
 async function callGemini(prompt) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 
   const response = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "x-goog-api-key": GEMINI_API_KEY,
+    },
     body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }),
   });
 
