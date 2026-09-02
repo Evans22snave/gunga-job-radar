@@ -114,7 +114,8 @@ class Database:
                         blockers,
                         eligibility,
                         employment_type,
-                        posted_date
+                        posted_date,
+                        deadline_date
                     )
                     VALUES (
                         %(source)s,
@@ -129,7 +130,8 @@ class Database:
                         %(blockers)s,
                         %(eligibility)s,
                         %(employment_type)s,
-                        %(posted_date)s
+                        %(posted_date)s,
+                        %(deadline_date)s
                     )
                     ON CONFLICT (source_url)
                     DO NOTHING
