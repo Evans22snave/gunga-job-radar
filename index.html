@@ -910,14 +910,12 @@ Write the cover letter now.`;
 }
 
 async function callGemini(prompt) {
-  // Uses v1alpha endpoint and passes the service key as a Bearer token
-  const url = `https://generativelanguage.googleapis.com/v1alpha/models/${GEMINI_MODEL}:generateContent`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
 
   const response = await fetch(url, {
     method: "POST",
     headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${GEMINI_API_KEY}`
+      "Content-Type": "application/json"
     },
     body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }),
   });
