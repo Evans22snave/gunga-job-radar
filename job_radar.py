@@ -654,6 +654,160 @@ def classify_location(
 
 
 # ============================================================
+# DEADLINE EXTRACTION
+# ============================================================
+# Shared across all collectors. Deadlines are stated
+# inconsistently (or not at all) across sources — this returns
+# None when nothing is found, which is expected and fine; the
+# dashboard just doesn't show a deadline badge for those jobs.
+
+MONTHS_PATTERN = (
+    "January|February|March|April|May|June|"
+    "July|August|September|October|November|December"
+)
+
+MONTH_NUMBERS = {
+
+    name: index
+
+    for index, name in enumerate(
+        MONTHS_PATTERN.split("|"),
+        start=1,
+    )
+
+}
+
+DEADLINE_KEYWORD_RE = re.compile(
+    r"(?:application\s+)?deadline"
+    r"(?:\s+date)?\s*[:\-]?\s*"
+    r"|closing\s+date\s*[:\-]?\s*"
+    r"|apply\s+(?:before|by)\s*[:\-]?\s*",
+    re.IGNORECASE,
+)
+
+# "30th July 2026" / "30 July 2026"
+DEADLINE_DMY_RE = re.compile(
+    r"\b(\d{1,2})(?:st|nd|rd|th)?\s+"
+    r"(" + MONTHS_PATTERN + r")"
+    r"\s+(\d{4})\b",
+    re.IGNORECASE,
+)
+
+# "September 25, 2026" / "September 25 2026"
+DEADLINE_MDY_RE = re.compile(
+    r"\b(" + MONTHS_PATTERN + r")"
+    r"\s+(\d{1,2})(?:st|nd|rd|th)?,?"
+    r"\s+(\d{4})\b",
+    re.IGNORECASE,
+)
+
+# "31/08/2026" or "31-08-2026" (day/month/year, the common
+# convention in Kenyan listings)
+DEADLINE_NUMERIC_RE = re.compile(
+    r"\b(\d{1,2})[/\-](\d{1,2})[/\-](\d{4})\b"
+)
+
+
+def extract_deadline_date(
+    text: str,
+) -> str | None:
+
+    if not text:
+        return None
+
+    keyword_match = DEADLINE_KEYWORD_RE.search(
+        text
+    )
+
+    if not keyword_match:
+        return None
+
+    # Look only in a short window right after the keyword —
+    # avoids accidentally grabbing an unrelated date elsewhere
+    # in the description.
+    window = text[
+        keyword_match.end():
+        keyword_match.end() + 40
+    ]
+
+    dmy = DEADLINE_DMY_RE.search(window)
+
+    if dmy:
+
+        day_str, month_name, year_str = (
+            dmy.groups()
+        )
+
+        month = MONTH_NUMBERS.get(
+            month_name.capitalize()
+        )
+
+        if month:
+
+            try:
+
+                return date(
+                    int(year_str),
+                    month,
+                    int(day_str),
+                ).isoformat()
+
+            except ValueError:
+
+                pass
+
+    mdy = DEADLINE_MDY_RE.search(window)
+
+    if mdy:
+
+        month_name, day_str, year_str = (
+            mdy.groups()
+        )
+
+        month = MONTH_NUMBERS.get(
+            month_name.capitalize()
+        )
+
+        if month:
+
+            try:
+
+                return date(
+                    int(year_str),
+                    month,
+                    int(day_str),
+                ).isoformat()
+
+            except ValueError:
+
+                pass
+
+    numeric = DEADLINE_NUMERIC_RE.search(
+        window
+    )
+
+    if numeric:
+
+        day_str, month_str, year_str = (
+            numeric.groups()
+        )
+
+        try:
+
+            return date(
+                int(year_str),
+                int(month_str),
+                int(day_str),
+            ).isoformat()
+
+        except ValueError:
+
+            pass
+
+    return None
+
+
+# ============================================================
 # HIMALAYAS COLLECTOR
 # ============================================================
 
@@ -983,6 +1137,11 @@ def fetch_himalayas_jobs() -> list[
                     "posted_date":
                         posted_date,
 
+                    "deadline_date":
+                        extract_deadline_date(
+                            full_description
+                        ),
+
                 })
 
         except requests.RequestException as exc:
@@ -1019,25 +1178,9 @@ def fetch_himalayas_jobs() -> list[
 # MYJOBMAG COLLECTOR
 # ============================================================
 
-MONTHS_PATTERN = (
-    "January|February|March|April|May|June|"
-    "July|August|September|October|November|December"
-)
-
 DATE_RE = re.compile(
     r"\b\d{1,2}\s+(?:" + MONTHS_PATTERN + r")\b"
 )
-
-MONTH_NUMBERS = {
-
-    name: index
-
-    for index, name in enumerate(
-        MONTHS_PATTERN.split("|"),
-        start=1,
-    )
-
-}
 
 
 def parse_myjobmag_posted_date(
@@ -1264,6 +1407,11 @@ def parse_myjobmag_page(
             "posted_date":
                 parse_myjobmag_posted_date(
                     posted
+                ),
+
+            "deadline_date":
+                extract_deadline_date(
+                    container_text
                 ),
 
         })
@@ -1584,6 +1732,11 @@ def parse_brightermonday_page(
 
             "posted_date":
                 posted_date,
+
+            "deadline_date":
+                extract_deadline_date(
+                    container_text
+                ),
 
         })
 
@@ -1926,6 +2079,11 @@ def parse_openedcareer_page(
 
             "posted_date":
                 posted_date,
+
+            "deadline_date":
+                extract_deadline_date(
+                    container_text
+                ),
 
         })
 
@@ -2554,6 +2712,9 @@ def save_job(
 
         "posted_date":
             job.get("posted_date"),
+
+        "deadline_date":
+            job.get("deadline_date"),
 
     }
 
