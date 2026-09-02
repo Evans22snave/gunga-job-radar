@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     eligibility VARCHAR(30),
     employment_type VARCHAR(60),
     posted_date DATE,
+    deadline_date DATE,
     reasons TEXT,
     blockers TEXT,
     telegram_sent BOOLEAN DEFAULT FALSE,
@@ -67,6 +68,7 @@ CREATE INDEX IF NOT EXISTS idx_jobs_score ON jobs(score);
 CREATE INDEX IF NOT EXISTS idx_jobs_eligibility ON jobs(eligibility);
 CREATE INDEX IF NOT EXISTS idx_jobs_applied ON jobs(applied);
 CREATE INDEX IF NOT EXISTS idx_jobs_posted_date ON jobs(posted_date);
+CREATE INDEX IF NOT EXISTS idx_jobs_deadline_date ON jobs(deadline_date);
 CREATE INDEX IF NOT EXISTS idx_notifications_job_id ON notifications(job_id);
 CREATE INDEX IF NOT EXISTS idx_notifications_status ON notifications(status);
 
