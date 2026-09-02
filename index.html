@@ -910,13 +910,14 @@ Write the cover letter now.`;
 }
 
 async function callGemini(prompt) {
-  // Appending API Key to URL query parameter to pass browser CORS/Auth restrictions
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+  // Uses v1alpha endpoint and passes the service key as a Bearer token
+  const url = `https://generativelanguage.googleapis.com/v1alpha/models/${GEMINI_MODEL}:generateContent`;
 
   const response = await fetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      "Authorization": `Bearer ${GEMINI_API_KEY}`
     },
     body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }),
   });
@@ -930,7 +931,7 @@ async function callGemini(prompt) {
   const text = data?.candidates?.[0]?.content?.parts?.map(part => part.text).join("");
 
   if (!text) {
-    throw new Error("Gemini returned an empty response — it may have blocked the content, or the model alias may need updating.");
+    throw new Error("Gemini returned an empty response.");
   }
 
   return text.trim();
