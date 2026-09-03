@@ -94,6 +94,19 @@ class Database:
         self,
         job: dict[str, Any],
     ) -> int | None:
+        """Insert a job, or — if its source_url already exists —
+        backfill any fields that are still NULL on the existing
+        row (e.g. posted_date/deadline_date/eligibility added by
+        a later version of the scanner) without touching fields
+        that already have a value.
+
+        Returns the row id only when this call performed a real
+        INSERT (a genuinely new job) — None for a duplicate, even
+        though its stale fields may have just been backfilled.
+        This preserves the existing "is this new?" contract that
+        run_scan()'s new-vs-duplicate and Telegram-retry logic
+        depend on; only the freshness of old rows' data changes.
+        """
 
         with self.connection() as conn:
 
@@ -133,9 +146,21 @@ class Database:
                         %(posted_date)s,
                         %(deadline_date)s
                     )
-                    ON CONFLICT (source_url)
-                    DO NOTHING
-                    RETURNING id
+                    ON CONFLICT (source_url) DO UPDATE SET
+                        eligibility = COALESCE(
+                            jobs.eligibility, EXCLUDED.eligibility
+                        ),
+                        employment_type = COALESCE(
+                            NULLIF(jobs.employment_type, ''),
+                            EXCLUDED.employment_type
+                        ),
+                        posted_date = COALESCE(
+                            jobs.posted_date, EXCLUDED.posted_date
+                        ),
+                        deadline_date = COALESCE(
+                            jobs.deadline_date, EXCLUDED.deadline_date
+                        )
+                    RETURNING id, (xmax = 0) AS inserted
                     """,
                     job,
                 )
@@ -145,7 +170,12 @@ class Database:
                 if row is None:
                     return None
 
-                return int(row[0])
+                job_id, was_inserted = row
+
+                if not was_inserted:
+                    return None
+
+                return int(job_id)
 
     def get_job(
         self,
