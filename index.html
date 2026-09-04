@@ -284,6 +284,64 @@
   .badge.deadline-urgent { color: var(--signal-consider); border-color: var(--signal-consider-dim); background: var(--signal-consider-dim); }
   .badge.deadline-soon { color: var(--signal-consider); border-color: var(--signal-consider-dim); }
 
+  .date-box {
+    display: flex;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--panel-raised);
+    overflow: hidden;
+    margin: 9px 0;
+  }
+
+  .date-col {
+    flex: 1 1 50%;
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 9px 12px;
+    min-width: 0;
+  }
+
+  .date-col + .date-col { border-left: 1px solid var(--border); }
+
+  .date-icon {
+    flex-shrink: 0;
+    width: 15px;
+    height: 15px;
+    margin-top: 1px;
+    color: var(--text-muted);
+  }
+
+  .date-icon svg { width: 100%; height: 100%; display: block; }
+
+  .date-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.3px;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin: 0 0 2px;
+  }
+
+  .date-value {
+    font-size: 13px;
+    color: var(--text);
+    line-height: 1.3;
+  }
+
+  .date-value .date-sub {
+    display: block;
+    font-size: 11px;
+    font-style: italic;
+    margin-top: 1px;
+    color: var(--signal-consider);
+  }
+
+  .date-col.deadline-passed .date-value,
+  .date-col.deadline-passed .date-sub { color: var(--signal-restricted); }
+
+  .date-col.deadline-normal .date-sub { color: var(--text-muted); }
+
   .reasons {
     font-size: 12.5px;
     color: var(--text-muted);
@@ -527,45 +585,66 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
-function daysAgoLabel(dateStr) {
-  if (!dateStr) return null;
-  const posted = new Date(dateStr + "T00:00:00");
-  const diffDays = Math.max(0, Math.round((Date.now() - posted.getTime()) / 86400000));
-  if (diffDays === 0) return "posted today";
-  if (diffDays === 1) return "posted 1d ago";
-  return `posted ${diffDays}d ago`;
+function formatFullDate(dateStr) {
+  const d = new Date(dateStr + "T00:00:00");
+  return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
 }
 
-// Returns { text, urgency } where urgency drives badge color:
-// "passed" (red), "urgent" (amber, <=3 days), "soon" (amber,
-// <=7 days), or "normal" (muted, further out).
-function deadlineLabel(dateStr) {
-  if (!dateStr) return null;
+const CALENDAR_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>';
+const CLOCK_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>';
 
-  const deadline = new Date(dateStr + "T00:00:00");
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+// Builds the "Posted | Deadline" info box for a job card. Returns
+// "" when neither date is known so the box doesn't render empty.
+function buildDateBox(job) {
+  if (!job.posted_date && !job.deadline_date) return "";
 
-  const diffDays = Math.round((deadline.getTime() - today.getTime()) / 86400000);
+  const postedCol = job.posted_date
+    ? `<div class="date-col">
+        <span class="date-icon">${CALENDAR_ICON}</span>
+        <div><p class="date-label">Posted</p><p class="date-value">${formatFullDate(job.posted_date)}</p></div>
+      </div>`
+    : `<div class="date-col">
+        <span class="date-icon">${CALENDAR_ICON}</span>
+        <div><p class="date-label">Posted</p><p class="date-value">—</p></div>
+      </div>`;
 
-  if (diffDays < 0) {
-    return { text: "🔴 Deadline passed", urgency: "passed" };
-  }
-  if (diffDays === 0) {
-    return { text: "🟠 Closing today", urgency: "urgent" };
-  }
-  if (diffDays === 1) {
-    return { text: "🟠 Closing tomorrow", urgency: "urgent" };
-  }
-  if (diffDays <= 3) {
-    return { text: `🟠 Closing in ${diffDays}d`, urgency: "urgent" };
-  }
-  if (diffDays <= 7) {
-    return { text: `🟡 Closing this week (${diffDays}d)`, urgency: "soon" };
+  let deadlineCol;
+
+  if (job.deadline_date) {
+    const d = new Date(job.deadline_date + "T00:00:00");
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const diffDays = Math.round((d.getTime() - today.getTime()) / 86400000);
+
+    let urgencyClass = "deadline-normal";
+    let sub;
+
+    if (diffDays < 0) {
+      urgencyClass = "deadline-passed";
+      sub = diffDays === -1 ? "(closed yesterday)" : `(closed ${Math.abs(diffDays)}d ago)`;
+    } else if (diffDays === 0) {
+      urgencyClass = "deadline-urgent";
+      sub = "(closes today)";
+    } else if (diffDays === 1) {
+      urgencyClass = "deadline-urgent";
+      sub = "(1 day left)";
+    } else {
+      urgencyClass = diffDays <= 7 ? "deadline-urgent" : "deadline-normal";
+      sub = `(${diffDays} days left)`;
+    }
+
+    deadlineCol = `<div class="date-col ${urgencyClass}">
+        <span class="date-icon">${CLOCK_ICON}</span>
+        <div><p class="date-label">Deadline</p><p class="date-value">${formatFullDate(job.deadline_date)}<span class="date-sub">${sub}</span></p></div>
+      </div>`;
+  } else {
+    deadlineCol = `<div class="date-col">
+        <span class="date-icon">${CLOCK_ICON}</span>
+        <div><p class="date-label">Deadline</p><p class="date-value">—</p></div>
+      </div>`;
   }
 
-  const formatted = deadline.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
-  return { text: `Deadline: ${formatted}`, urgency: "normal" };
+  return `<div class="date-box">${postedCol}${deadlineCol}</div>`;
 }
 
 function buildBaseQuery(countOnly = false) {
@@ -629,9 +708,13 @@ function renderCard(job) {
   el.dataset.jobId = job.id;
 
   const elig = ELIGIBILITY_LABELS[job.eligibility] || ELIGIBILITY_LABELS["UNKNOWN"];
-  const posted = daysAgoLabel(job.posted_date);
-  const deadline = deadlineLabel(job.deadline_date);
-  if (deadline && deadline.urgency === "passed") el.classList.add("deadline-expired");
+
+  if (job.deadline_date) {
+    const d = new Date(job.deadline_date + "T00:00:00");
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    if (d.getTime() < today.getTime()) el.classList.add("deadline-expired");
+  }
 
   const reasonItems = (job.reasons || "")
     .split(";")
@@ -644,15 +727,14 @@ function renderCard(job) {
         <p class="job-title">${escapeHtml(job.title)}</p>
         <div class="job-company">${escapeHtml(job.company)} · ${escapeHtml(job.location || "—")}</div>
       </div>
-      <div class="job-score">${job.score}%</div>
+      <div class="job-score">${job.score}%<div style="font-size:9px;text-transform:uppercase;letter-spacing:0.4px;color:var(--text-muted);text-align:right;">match</div></div>
     </div>
     <div class="badge-row">
       <span class="badge ${elig.class}">${elig.text}</span>
       <span class="badge">${escapeHtml(job.source)}</span>
       ${job.employment_type ? `<span class="badge">${escapeHtml(job.employment_type)}</span>` : ""}
-      ${posted ? `<span class="badge">${posted}</span>` : ""}
-      ${deadline ? `<span class="badge deadline-${deadline.urgency}">${deadline.text}</span>` : ""}
     </div>
+    ${buildDateBox(job)}
     ${reasonItems.length ? `
     <details class="reasons">
       <summary>Why it matches (${reasonItems.length})</summary>
