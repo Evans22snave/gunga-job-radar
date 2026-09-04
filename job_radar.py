@@ -685,11 +685,13 @@ DEADLINE_KEYWORD_RE = re.compile(
     re.IGNORECASE,
 )
 
-# "30th July 2026" / "30 July 2026"
+# "30th July 2026" / "30 July 2026" / "23rd February, 2026"
+# (the trailing ",?" handles sources like OpenedCareer that put
+# a comma between the month and the year)
 DEADLINE_DMY_RE = re.compile(
     r"\b(\d{1,2})(?:st|nd|rd|th)?\s+"
     r"(" + MONTHS_PATTERN + r")"
-    r"\s+(\d{4})\b",
+    r",?\s+(\d{4})\b",
     re.IGNORECASE,
 )
 
@@ -1590,6 +1592,50 @@ def parse_brightermonday_posted(
     ).isoformat()
 
 
+def find_brightermonday_card(link: Any) -> Any:
+    """Find the ancestor element that holds the *whole* job card.
+
+    The old approach grabbed the nearest <li>/<article>/<div>
+    ancestor of the title link, but on BrighterMonday's current
+    markup that nearest ancestor is often just a thin wrapper
+    around the title itself — it doesn't reach the sibling text
+    that carries the "posted X ago" label, which lives further
+    up the tree alongside the company/location/tags block. That
+    caused posted_date (and any deadline text) to silently come
+    back empty for most listings.
+
+    Instead, climb from the link upward one parent at a time and
+    stop at the first ancestor whose text already contains a
+    relative-posted-date phrase ("3 days ago", "Today", etc.) or
+    the "Easy apply" footer every card ends with — whichever
+    comes first proves we've reached the full card, not just a
+    fragment of it. Cap the climb so a miss can't accidentally
+    swallow the whole results list.
+    """
+
+    node = link
+    fallback = None
+
+    for _ in range(8):
+
+        parent = node.find_parent(["li", "article", "div"])
+
+        if parent is None:
+            break
+
+        if fallback is None:
+            fallback = parent
+
+        text = parent.get_text(separator=" ")
+
+        if POSTED_RELATIVE_RE.search(text) or "Easy apply" in text:
+            return parent
+
+        node = parent
+
+    return fallback or link
+
+
 def parse_brightermonday_page(
     html: str,
 ) -> list[dict[str, Any]]:
@@ -1641,12 +1687,7 @@ def parse_brightermonday_page(
 
         seen_hrefs.add(href)
 
-        container = (
-            link.find_parent("li")
-            or link.find_parent("article")
-            or link.find_parent("div")
-            or link
-        )
+        container = find_brightermonday_card(link)
 
         container_text = " ".join(
             container.get_text(
