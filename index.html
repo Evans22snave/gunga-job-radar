@@ -28,6 +28,8 @@
     --signal-restricted-dim: #4A2420;
 
     --sweep: #58D9C4;
+    --new-accent: #8C9EFF;
+    --new-accent-dim: #2A2F5C;
 
     --radius: 10px;
     --radius-sm: 6px;
@@ -129,7 +131,7 @@
 
   .stats {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(4, 1fr);
     gap: 10px;
     margin-bottom: 18px;
   }
@@ -138,18 +140,19 @@
     background: var(--panel);
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    padding: 12px 14px;
+    padding: 12px 10px;
   }
 
   .stat .num {
     font-family: 'JetBrains Mono', monospace;
-    font-size: 22px;
+    font-size: 20px;
     font-weight: 700;
     line-height: 1;
   }
 
   .stat .num.strong { color: var(--signal-strong); }
   .stat .num.applied { color: var(--sweep); }
+  .stat .num.saved { color: var(--new-accent); }
 
   .stat .label {
     font-size: 11px;
@@ -228,6 +231,17 @@
 
   .job-card.is-applied { opacity: 0.72; }
   .job-card.deadline-expired { opacity: 0.6; }
+
+  .job-card.is-recent {
+    box-shadow: 0 0 0 1px var(--new-accent) inset;
+    background: linear-gradient(180deg, var(--new-accent-dim) 0%, var(--panel) 60px);
+  }
+
+  .badge.badge-new {
+    color: var(--new-accent);
+    border-color: var(--new-accent);
+    background: var(--new-accent-dim);
+  }
 
   .job-top {
     display: flex;
@@ -392,6 +406,14 @@
     background: rgba(88, 217, 196, 0.08);
   }
 
+  .btn.save-toggle:hover { border-color: var(--text-muted); }
+
+  .btn.save-toggle.done {
+    color: var(--new-accent);
+    border-color: var(--new-accent);
+    background: rgba(140, 158, 255, 0.1);
+  }
+
   .applied-note {
     font-family: 'JetBrains Mono', monospace;
     font-size: 11px;
@@ -460,6 +482,7 @@
       <li>Copy the <strong>Project URL</strong> and the <strong>anon public</strong> key</li>
       <li>Open <code>index.html</code> in this repo and fill in the <code>SUPABASE_URL</code> and <code>SUPABASE_ANON_KEY</code> constants near the top of the <code>&lt;script&gt;</code> block</li>
       <li>Run <code>database/migration_dashboard.sql</code> once in the Supabase SQL Editor if you haven't already — it adds the columns and the secure "mark applied" function this page needs</li>
+      <li>Run <code>database/migration_saved.sql</code> once too — it adds the "save for later" columns and function</li>
       <li>Commit and push — GitHub Pages will pick it up automatically</li>
     </ol>
   </div>
@@ -478,6 +501,10 @@
       <div class="stat">
         <div class="num applied" id="statApplied">—</div>
         <div class="label">Applied</div>
+      </div>
+      <div class="stat">
+        <div class="num saved" id="statSaved">—</div>
+        <div class="label">Saved</div>
       </div>
     </div>
 
@@ -507,11 +534,17 @@
           <option value="MyJobMag">MyJobMag</option>
           <option value="BrighterMonday">BrighterMonday</option>
           <option value="OpenedCareer">OpenedCareer</option>
+          <option value="Fuzu">Fuzu</option>
         </select>
         <select id="appliedFilter">
           <option value="all">All</option>
           <option value="false">Not applied</option>
           <option value="true">Applied</option>
+        </select>
+        <select id="savedFilter">
+          <option value="all">Saved: all</option>
+          <option value="true">⭐ Saved only</option>
+          <option value="false">Not saved</option>
         </select>
         <select id="sortFilter">
           <option value="score_desc">Highest match</option>
@@ -565,6 +598,7 @@ const state = {
     tier: "all",
     source: "all",
     applied: "all",
+    saved: "all",
     sort: "score_desc",
   },
   reachedEnd: false,
@@ -592,6 +626,17 @@ function formatFullDate(dateStr) {
 
 const CALENDAR_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>';
 const CLOCK_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>';
+
+const RECENT_WINDOW_MS = 2 * 24 * 60 * 60 * 1000;
+
+// True when this job was added to the database within the
+// last 2 days — based on created_at (when Gunga Job Radar
+// found it), not posted_date (the source site's own date,
+// which isn't always reliable or even present).
+function isRecentlyAdded(job) {
+  if (!job.created_at) return false;
+  return (Date.now() - new Date(job.created_at).getTime()) <= RECENT_WINDOW_MS;
+}
 
 // Builds the "Posted | Deadline" info box for a job card. Returns
 // "" when neither date is known so the box doesn't render empty.
@@ -653,7 +698,7 @@ function buildBaseQuery(countOnly = false) {
     .select(
       countOnly
         ? "id"
-        : "id, source, source_url, title, company, location, score, tier, eligibility, employment_type, posted_date, deadline_date, reasons, applied, applied_at, created_at",
+        : "id, source, source_url, title, company, location, score, tier, eligibility, employment_type, posted_date, deadline_date, reasons, applied, applied_at, saved, saved_at, created_at",
       countOnly ? { count: "exact", head: true } : { count: "exact" }
     );
 
@@ -685,19 +730,25 @@ function buildBaseQuery(countOnly = false) {
     query = query.eq("applied", f.applied === "true");
   }
 
+  if (f.saved !== "all") {
+    query = query.eq("saved", f.saved === "true");
+  }
+
   return query;
 }
 
 async function refreshStats() {
-  const [{ count: total }, { count: strong }, { count: applied }] = await Promise.all([
+  const [{ count: total }, { count: strong }, { count: applied }, { count: saved }] = await Promise.all([
     supabase.from("jobs").select("id", { count: "exact", head: true }),
     supabase.from("jobs").select("id", { count: "exact", head: true }).eq("tier", "strong"),
     supabase.from("jobs").select("id", { count: "exact", head: true }).eq("applied", true),
+    supabase.from("jobs").select("id", { count: "exact", head: true }).eq("saved", true),
   ]);
 
   document.getElementById("statTotal").textContent = total ?? "—";
   document.getElementById("statStrong").textContent = strong ?? "—";
   document.getElementById("statApplied").textContent = applied ?? "—";
+  document.getElementById("statSaved").textContent = saved ?? "—";
 }
 
 function renderCard(job) {
@@ -705,6 +756,7 @@ function renderCard(job) {
   el.className = `job-card tier-${job.tier}`;
   if (job.eligibility === "REMOTE-RESTRICTED") el.classList.add("elig-restricted");
   if (job.applied) el.classList.add("is-applied");
+  if (isRecentlyAdded(job)) el.classList.add("is-recent");
   el.dataset.jobId = job.id;
 
   const elig = ELIGIBILITY_LABELS[job.eligibility] || ELIGIBILITY_LABELS["UNKNOWN"];
@@ -730,6 +782,7 @@ function renderCard(job) {
       <div class="job-score">${job.score}%<div style="font-size:9px;text-transform:uppercase;letter-spacing:0.4px;color:var(--text-muted);text-align:right;">match</div></div>
     </div>
     <div class="badge-row">
+      ${isRecentlyAdded(job) ? `<span class="badge badge-new">🆕 NEW</span>` : ""}
       <span class="badge ${elig.class}">${elig.text}</span>
       <span class="badge">${escapeHtml(job.source)}</span>
       ${job.employment_type ? `<span class="badge">${escapeHtml(job.employment_type)}</span>` : ""}
@@ -742,6 +795,9 @@ function renderCard(job) {
     </details>` : ""}
     <div class="job-actions">
       <a class="btn apply-link" href="${escapeHtml(job.source_url)}" target="_blank" rel="noopener">🔗 Apply</a>
+      <button class="btn save-toggle ${job.saved ? "done" : ""}" data-saved="${job.saved}">
+        ${job.saved ? "★ Saved" : "☆ Save"}
+      </button>
       <button class="btn mark-applied ${job.applied ? "done" : ""}" data-applied="${job.applied}">
         ${job.applied ? "✓ Applied" : "Mark applied"}
       </button>
@@ -750,6 +806,7 @@ function renderCard(job) {
   `;
 
   el.querySelector(".mark-applied").addEventListener("click", (e) => toggleApplied(job, el, e.currentTarget));
+  el.querySelector(".save-toggle").addEventListener("click", (e) => toggleSaved(job, el, e.currentTarget));
 
   return el;
 }
@@ -786,6 +843,39 @@ async function toggleApplied(job, cardEl, buttonEl) {
     note.className = "applied-note";
     note.textContent = `on ${new Date().toLocaleDateString()}`;
     cardEl.querySelector(".job-actions").appendChild(note);
+  }
+
+  refreshStats();
+}
+
+async function toggleSaved(job, cardEl, buttonEl) {
+  const nextSaved = !(buttonEl.dataset.saved === "true");
+
+  buttonEl.disabled = true;
+
+  const { error } = await supabase.rpc("mark_job_saved", {
+    p_job_id: job.id,
+    p_saved: nextSaved,
+  });
+
+  buttonEl.disabled = false;
+
+  if (error) {
+    console.error(error);
+    buttonEl.textContent = "Error — retry";
+    return;
+  }
+
+  job.saved = nextSaved;
+  buttonEl.dataset.saved = String(nextSaved);
+  buttonEl.textContent = nextSaved ? "★ Saved" : "☆ Save";
+  buttonEl.classList.toggle("done", nextSaved);
+
+  // If the "Saved only" filter is active, an unsaved card no
+  // longer belongs in the list — drop it instead of leaving a
+  // stale card the user just removed from their saved list.
+  if (nextSaved === false && state.filters.saved === "true") {
+    cardEl.remove();
   }
 
   refreshStats();
@@ -868,7 +958,7 @@ function wireControls() {
     loadJobs(true);
   }, 350));
 
-  ["eligibilityFilter", "tierFilter", "sourceFilter", "appliedFilter", "sortFilter"].forEach(id => {
+  ["eligibilityFilter", "tierFilter", "sourceFilter", "appliedFilter", "savedFilter", "sortFilter"].forEach(id => {
     document.getElementById(id).addEventListener("change", e => {
       const key = id.replace("Filter", "");
       state.filters[key === "eligibility" ? "eligibility" : key] = e.target.value;
