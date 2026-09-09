@@ -4,11 +4,11 @@ Phase 4 — Kenya-aware job matching
 
 Pipeline:
 
-    Himalayas API   MyJobMag (Kenya)
-          ↓               ↓
-          └───────┬───────┘
-                   ↓
-               Collector
+    Himalayas API   MyJobMag   BrighterMonday   OpenedCareer   Fuzu
+          ↓             ↓             ↓               ↓         ↓
+          └─────────────┴─────────────┴───────────────┴─────────┘
+                                       ↓
+                                  Collector
                    ↓
      Location Classification
           ↓
@@ -147,6 +147,18 @@ OPENEDCAREER_CATEGORY_URLS = [
 OPENEDCAREER_MAX_PAGES = 3
 
 OPENEDCAREER_REQUEST_DELAY = 1.0
+
+FUZU_CATEGORY_URLS = [
+
+    "https://www.fuzu.com/kenya/job/computers-software-development",
+
+    "https://www.fuzu.com/kenya/job/computers-software-development/basic",
+
+]
+
+FUZU_MAX_PAGES = 3
+
+FUZU_REQUEST_DELAY = 1.0
 
 # Fixed set of location values BrighterMonday itself filters by —
 # longest-first so "Rest of Kenya" matches before the bare "Kenya"
@@ -1970,6 +1982,40 @@ def parse_openedcareer_posted(
         return None
 
 
+def _openedcareer_is_real_listing(
+    heading: Any,
+    max_nodes: int = 60,
+) -> bool:
+    """True if a "Read More" link follows this heading before
+    the next one — the marker that separates a real category
+    listing from a "Recent Posts" sidebar entry (see
+    parse_openedcareer_page's docstring).
+    """
+
+    for node in heading.find_all_next(
+        string=True,
+        limit=max_nodes,
+    ):
+
+        enclosing = node.find_parent(
+            ["h3", "h4"]
+        )
+
+        if (
+            enclosing is not None
+            and enclosing is not heading
+        ):
+
+            # Reached the next post's heading without
+            # finding a "Read More" link for this one.
+            return False
+
+        if "read more" in node.strip().lower():
+            return True
+
+    return False
+
+
 def parse_openedcareer_page(
     html: str,
 ) -> list[dict[str, Any]]:
@@ -1977,11 +2023,15 @@ def parse_openedcareer_page(
 
     Post titles are wrapped in a heading (h3/h4) linking to the
     post's own permalink — the same pattern MyJobMag uses.
-    OpenedCareer's "Recent Posts" sidebar widget also uses
-    headings, so a few unrelated (non-ICT-category) posts can
-    slip in; they score on their own merits rather than causing
-    harm, so this is left as acceptable noise rather than solved
-    with brittle, unverifiable class-name guessing.
+
+    OpenedCareer's site-wide "Recent Posts" sidebar widget also
+    uses headings, and it shows whatever the site published most
+    recently *overall* — not scoped to this category — so it was
+    slipping in stale, unrelated posts (e.g. a hotel front-desk
+    role) as if they were real ICT listings. Real listing entries
+    always carry a "Read More" link after their excerpt; sidebar
+    widget entries never do, so that's used here to tell them
+    apart instead of guessing at class names.
     """
 
     soup = BeautifulSoup(
@@ -2006,6 +2056,11 @@ def parse_openedcareer_page(
             continue
 
         href = link["href"]
+
+        if not _openedcareer_is_real_listing(
+            heading
+        ):
+            continue
 
         if any(
             nav in href
@@ -2231,6 +2286,355 @@ def fetch_openedcareer_jobs() -> list[
     logger.info(
         "OpenedCareer returned %d "
         "unique jobs",
+        len(jobs),
+    )
+
+    return jobs
+
+
+# ============================================================
+# FUZU COLLECTOR
+# ============================================================
+
+FUZU_NOISE_PREFIXES = (
+
+    "leading company in",
+
+    "get personalised",
+
+    "only on fuzu",
+
+    "closed for applications",
+
+    "sign in and apply",
+
+)
+
+
+def parse_fuzu_page(
+    html: str,
+) -> list[dict[str, Any]]:
+    """Parse one Fuzu category page into raw job dicts.
+
+    Fuzu renders each listing's job title as a heading (h2/h3)
+    linking to "/<country>/jobs/<slug>" — the plural "jobs" is
+    the actual posting permalink. Category, industry, seniority
+    and location filter links all use the singular "/job/" path
+    instead, so checking for "/jobs/" in the href keeps this
+    scoped to real listings and skips all the filter-sidebar
+    noise. Unlike MyJobMag/OpenedCareer, the title text itself
+    has no "<Title> at <Company>" pattern — the employer name
+    sits in a short text node just above the heading, and the
+    location sits in one or two short link tags just below it —
+    so both are picked up by walking outward from the heading
+    rather than by parsing the heading text.
+    """
+
+    soup = BeautifulSoup(
+        html,
+        "html.parser",
+    )
+
+    results: list[dict[str, Any]] = []
+
+    seen_hrefs: set[str] = set()
+
+    for heading in soup.find_all(
+        ["h2", "h3"]
+    ):
+
+        link = heading.find(
+            "a",
+            href=True,
+        )
+
+        if not link:
+            continue
+
+        href = link["href"]
+
+        if "/jobs/" not in href:
+            continue
+
+        if href.startswith("/"):
+            href = (
+                "https://www.fuzu.com"
+                + href
+            )
+
+        href = href.split("?")[0]
+
+        if href in seen_hrefs:
+            continue
+
+        seen_hrefs.add(href)
+
+        title = clean_text(
+            link.get_text()
+        ).strip()
+
+        if not title:
+            continue
+
+        # Employer name: nearest text-bearing element before
+        # this heading, stopping the walk at the previous job's
+        # heading so we never wander into an earlier card.
+        company = "Unknown"
+
+        for prev in heading.find_all_previous(
+            limit=25
+        ):
+
+            if prev.name in (
+                "h2",
+                "h3",
+            ):
+                break
+
+            # Only leaf-like text elements are candidates —
+            # wrapper "div"s tend to concatenate multiple
+            # sibling texts (e.g. a location-tag container),
+            # which would otherwise read as the company name.
+            if prev.name not in (
+                "p",
+                "span",
+                "strong",
+                "b",
+                "h4",
+                "h5",
+                "a",
+            ):
+                continue
+
+            # An <a> here is only useful if it's a company
+            # profile link — location and title links (which
+            # both use "/job") would otherwise read as company
+            # text (e.g. a stray "Kenya" location tag).
+            if (
+                prev.name == "a"
+                and "/job" in prev.get(
+                    "href",
+                    "",
+                )
+            ):
+                continue
+
+            text = clean_text(
+                prev.get_text()
+            ).strip()
+
+            if (
+                not text
+                or len(text) > 80
+                or "•" in text
+            ):
+                continue
+
+            if text.lower().startswith(
+                FUZU_NOISE_PREFIXES
+            ):
+                continue
+
+            company = text
+
+            break
+
+        # Location: one or two short location links (e.g.
+        # "Nairobi" then "• Kenya") immediately follow the
+        # title link, using the same singular "/job/" path as
+        # the filter sidebar. Stop early if we run into the
+        # next job's title link.
+        location = "Kenya"
+
+        for loc_link in heading.find_all_next(
+            "a",
+            href=True,
+            limit=8,
+        ):
+
+            loc_href = loc_link["href"]
+
+            # find_all_next() walks the flat parse tree, so
+            # the first hit is the title link's own anchor
+            # (still "inside" the heading) — skip it rather
+            # than treating it as the next job's title.
+            if loc_link is link:
+                continue
+
+            if "/jobs/" in loc_href:
+                break
+
+            if "/job/" not in loc_href:
+                continue
+
+            loc_text = clean_text(
+                loc_link.get_text()
+            ).strip(" •")
+
+            if (
+                loc_text
+                and loc_text.lower()
+                != "kenya"
+            ):
+
+                location = loc_text
+
+                break
+
+        container = (
+            heading.find_parent("div")
+            or heading
+        )
+
+        container_text = " ".join(
+            container.get_text(
+                separator=" "
+            ).split()
+        )
+
+        description = normalize_text(
+            container_text.replace(
+                title,
+                " ",
+            )
+        )
+
+        results.append({
+
+            "source":
+                "Fuzu",
+
+            "source_url":
+                href,
+
+            "title":
+                title,
+
+            "company":
+                company,
+
+            "location":
+                location,
+
+            "description":
+                description,
+
+            "employment_type":
+                "",
+
+            "posted_date":
+                None,
+
+            "deadline_date":
+                extract_deadline_date(
+                    container_text
+                ),
+
+        })
+
+    return results
+
+
+def fetch_fuzu_jobs() -> list[
+    dict[str, Any]
+]:
+
+    logger.info(
+        "Fetching jobs from Fuzu..."
+    )
+
+    jobs: list[dict[str, Any]] = []
+
+    seen_urls: set[str] = set()
+
+    session = requests.Session()
+
+    session.headers.update({
+
+        "User-Agent":
+            "Mozilla/5.0 (compatible; "
+            "Gunga-Job-Radar/1.0)",
+
+        "Accept":
+            "text/html",
+
+    })
+
+    for category_url in (
+        FUZU_CATEGORY_URLS
+    ):
+
+        for page in range(
+            1,
+            FUZU_MAX_PAGES + 1,
+        ):
+
+            url = (
+                category_url
+                if page == 1
+                else (
+                    f"{category_url}"
+                    f"?page={page}"
+                )
+            )
+
+            try:
+
+                response = session.get(
+                    url,
+                    timeout=REQUEST_TIMEOUT,
+                )
+
+                if response.status_code == 404:
+                    break
+
+                response.raise_for_status()
+
+                page_jobs = parse_fuzu_page(
+                    response.text
+                )
+
+                if not page_jobs:
+                    break
+
+                new_on_page = 0
+
+                for job in page_jobs:
+
+                    if job["source_url"] in seen_urls:
+                        continue
+
+                    seen_urls.add(
+                        job["source_url"]
+                    )
+
+                    jobs.append(job)
+
+                    new_on_page += 1
+
+                # Ran into a page of jobs we've already
+                # seen (the basic-level category overlaps
+                # the main category) — stop paging.
+                if new_on_page == 0:
+                    break
+
+            except requests.RequestException as exc:
+
+                logger.warning(
+                    "Fuzu request failed "
+                    "for '%s': %s",
+                    url,
+                    exc,
+                )
+
+                break
+
+            time.sleep(
+                FUZU_REQUEST_DELAY
+            )
+
+    logger.info(
+        "Fuzu returned %d unique jobs",
         len(jobs),
     )
 
@@ -3099,23 +3503,27 @@ def run_scan(
 
     openedcareer_jobs = fetch_openedcareer_jobs()
 
+    fuzu_jobs = fetch_fuzu_jobs()
+
     jobs = (
         himalayas_jobs
         + myjobmag_jobs
         + brightermonday_jobs
         + openedcareer_jobs
+        + fuzu_jobs
     )
 
     logger.info(
         "Processing %d jobs "
         "(%d Himalayas, %d MyJobMag, "
         "%d BrighterMonday, "
-        "%d OpenedCareer)...",
+        "%d OpenedCareer, %d Fuzu)...",
         len(jobs),
         len(himalayas_jobs),
         len(myjobmag_jobs),
         len(brightermonday_jobs),
         len(openedcareer_jobs),
+        len(fuzu_jobs),
     )
 
     jobs_fetched = len(jobs)
