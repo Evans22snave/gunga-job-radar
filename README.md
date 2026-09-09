@@ -57,7 +57,7 @@ python -m database.schema
 ## Architecture
 
 ```
-Himalayas API (145+ jobs/scan)
+Himalayas API + MyJobMag + BrighterMonday + OpenedCareer + Fuzu
          ↓
   Collector & Normalize
          ↓
