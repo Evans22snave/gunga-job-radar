@@ -5,6 +5,8 @@ Phase 4 — Kenya-aware job matching
 Pipeline:
 
     Himalayas API   MyJobMag   BrighterMonday   OpenedCareer   Fuzu
+    Career Point Kenya   Corporate Staffing   RemoteOK
+    We Work Remotely   ReliefWeb   PSC
           ↓             ↓             ↓               ↓         ↓
           └─────────────┴─────────────┴───────────────┴─────────┘
                                        ↓
@@ -40,6 +42,7 @@ from __future__ import annotations
 
 import argparse
 import html
+import json
 import logging
 import os
 import re
@@ -159,6 +162,75 @@ FUZU_CATEGORY_URLS = [
 FUZU_MAX_PAGES = 3
 
 FUZU_REQUEST_DELAY = 1.0
+
+CAREERPOINTKENYA_CATEGORY_URLS = [
+
+    "https://www.careerpointkenya.co.ke/category/it-jobs-in-kenya/",
+
+    "https://www.careerpointkenya.co.ke/category/internships-in-kenya/",
+
+]
+
+CAREERPOINTKENYA_MAX_PAGES = 3
+
+CAREERPOINTKENYA_REQUEST_DELAY = 1.0
+
+CORPORATESTAFFING_CATEGORY_URLS = [
+
+    "https://www.corporatestaffing.co.ke/category/it-jobs-in-kenya/",
+
+    "https://www.corporatestaffing.co.ke/category/internships-in-kenya/",
+
+]
+
+CORPORATESTAFFING_MAX_PAGES = 3
+
+CORPORATESTAFFING_REQUEST_DELAY = 1.0
+
+REMOTEOK_API = (
+    "https://remoteok.com/api"
+)
+
+REMOTEOK_REQUEST_DELAY = 0.5
+
+# All-in-one "Programming" feed covers full/back/front-end, plus
+# Devops and Sysadmin separately — this is the closest fit to
+# Evans's ICT/data-entry target on a board that skews senior and
+# has no "entry level" category of its own. score_job's normal
+# title/skill matching does the relevance filtering downstream,
+# same as it does for every other source.
+WEWORKREMOTELY_RSS_URLS = [
+
+    "https://weworkremotely.com/categories/remote-programming-jobs.rss",
+
+    "https://weworkremotely.com/categories/remote-devops-sysadmin-jobs.rss",
+
+]
+
+WEWORKREMOTELY_REQUEST_DELAY = 1.0
+
+# ReliefWeb's API has required a *pre-approved* appname since
+# 1 Nov 2025 (previously any string worked). If this source comes
+# back empty in the logs, the appname below likely needs approval
+# from ReliefWeb first — see https://apidoc.reliefweb.int/
+RELIEFWEB_APPNAME = "gunga-job-radar"
+
+RELIEFWEB_API = (
+    "https://api.reliefweb.int/v2/jobs"
+)
+
+RELIEFWEB_QUERY = (
+    "information technology OR ICT OR data OR "
+    "software OR computer"
+)
+
+RELIEFWEB_REQUEST_DELAY = 0.5
+
+PSC_URL = (
+    "https://www.psckjobs.go.ke/ActiveJobsAdverts.aspx"
+)
+
+PSC_REQUEST_DELAY = 1.0
 
 # Fixed set of location values BrighterMonday itself filters by —
 # longest-first so "Rest of Kenya" matches before the bare "Kenya"
@@ -2642,6 +2714,1449 @@ def fetch_fuzu_jobs() -> list[
 
 
 # ============================================================
+# SHARED WORDPRESS-STYLE HELPER
+# ============================================================
+# Career Point Kenya and Corporate Staffing both run the same
+# family of WordPress job-board theme: a heading (h2) links to
+# the post permalink, and the category tags / date / excerpt
+# that belong to that same listing sit as plain text between
+# this heading and the next one. Walking forward and stopping at
+# the next heading (the same trick OpenedCareer's "Read More"
+# check uses) collects exactly that listing's text regardless of
+# the exact wrapper element each theme uses.
+
+def _collect_text_after_heading(
+    heading: Any,
+    limit: int = 60,
+) -> str:
+
+    parts: list[str] = []
+
+    for node in heading.find_all_next(
+        string=True,
+        limit=limit,
+    ):
+
+        enclosing = node.find_parent(
+            ["h2", "h3"]
+        )
+
+        if (
+            enclosing is not None
+            and enclosing is not heading
+        ):
+
+            break
+
+        text = clean_text(node).strip()
+
+        if text:
+
+            parts.append(text)
+
+    return " ".join(parts)
+
+
+# ============================================================
+# CAREER POINT KENYA COLLECTOR
+# ============================================================
+
+CAREERPOINTKENYA_POST_RE = re.compile(
+    r"/(\d{4})/(\d{2})/(\d{2})/[^/]+/?$"
+)
+
+
+def parse_careerpointkenya_page(
+    html_text: str,
+) -> list[dict[str, Any]]:
+    """Parse one Career Point Kenya category page into raw job
+    dicts.
+
+    The theme dates every post permalink as /YYYY/MM/DD/slug/,
+    which doubles as a reliable posted_date source without
+    needing to parse any on-page date text. Titles follow this
+    theme family's "<Title> Job <Company>" convention (no "at"
+    separator, unlike MyJobMag/OpenedCareer). Some cards wrap the
+    title text directly in the permalink anchor; others use an
+    icon-only "view" anchor with no visible text and put the
+    title in a plain text node just before it — both are handled
+    here since the live markup wasn't available to confirm which
+    one this theme actually uses.
+    """
+
+    soup = BeautifulSoup(
+        html_text,
+        "html.parser",
+    )
+
+    results: list[dict[str, Any]] = []
+
+    seen_hrefs: set[str] = set()
+
+    for link in soup.find_all(
+        "a",
+        href=True,
+    ):
+
+        href = link["href"]
+
+        date_match = CAREERPOINTKENYA_POST_RE.search(
+            href
+        )
+
+        if not date_match:
+            continue
+
+        if href.startswith("/"):
+
+            href = (
+                "https://www.careerpointkenya.co.ke"
+                + href
+            )
+
+        href = href.split("?")[0]
+
+        if href in seen_hrefs:
+            continue
+
+        seen_hrefs.add(href)
+
+        link_text = clean_text(
+            link.get_text()
+        ).strip()
+
+        if len(link_text) > 8:
+
+            heading_text = link_text
+
+        else:
+
+            # Icon-only anchor — walk backward for the nearest
+            # substantial text node (same trick used for Fuzu's
+            # employer-name extraction).
+            heading_text = ""
+
+            for prev in link.find_all_previous(
+                limit=15
+            ):
+
+                if prev.name not in (
+                    "h1",
+                    "h2",
+                    "h3",
+                    "h4",
+                    "p",
+                    "span",
+                    "div",
+                ):
+
+                    continue
+
+                # find_all_previous() includes ancestors of
+                # `link` itself (an ancestor's opening tag comes
+                # "before" its own child in document order) —
+                # skip those, since their text just echoes the
+                # anchor's own (empty/icon-only) text back.
+                if link in prev.descendants:
+                    continue
+
+                text = clean_text(
+                    prev.get_text()
+                ).strip()
+
+                if (
+                    not text
+                    or len(text) > 140
+                ):
+
+                    continue
+
+                heading_text = text
+
+                break
+
+        if not heading_text:
+            continue
+
+        if " Job " in heading_text:
+
+            title, _, company = (
+                heading_text.partition(
+                    " Job "
+                )
+            )
+
+        else:
+
+            title, company = (
+                heading_text,
+                "Unknown",
+            )
+
+        year_str, month_str, day_str = (
+            date_match.groups()
+        )
+
+        try:
+
+            posted_date = date(
+                int(year_str),
+                int(month_str),
+                int(day_str),
+            ).isoformat()
+
+        except ValueError:
+
+            posted_date = None
+
+        results.append({
+
+            "source":
+                "Career Point Kenya",
+
+            "source_url":
+                href,
+
+            "title":
+                title.strip()
+                or "Untitled",
+
+            "company":
+                company.strip()
+                or "Unknown",
+
+            "location":
+                "Kenya",
+
+            "description":
+                normalize_text(
+                    heading_text
+                ),
+
+            "employment_type":
+                "",
+
+            "posted_date":
+                posted_date,
+
+            "deadline_date":
+                extract_deadline_date(
+                    heading_text
+                ),
+
+        })
+
+    return results
+
+
+def fetch_careerpointkenya_jobs() -> list[
+    dict[str, Any]
+]:
+
+    logger.info(
+        "Fetching jobs from Career Point Kenya..."
+    )
+
+    jobs: list[dict[str, Any]] = []
+
+    seen_urls: set[str] = set()
+
+    session = requests.Session()
+
+    session.headers.update({
+
+        "User-Agent":
+            "Mozilla/5.0 (compatible; "
+            "Gunga-Job-Radar/1.0)",
+
+        "Accept":
+            "text/html",
+
+    })
+
+    for category_url in (
+        CAREERPOINTKENYA_CATEGORY_URLS
+    ):
+
+        for page in range(
+            1,
+            CAREERPOINTKENYA_MAX_PAGES + 1,
+        ):
+
+            url = (
+                category_url
+                if page == 1
+                else (
+                    f"{category_url}"
+                    f"page/{page}/"
+                )
+            )
+
+            try:
+
+                response = session.get(
+                    url,
+                    timeout=REQUEST_TIMEOUT,
+                )
+
+                if response.status_code == 404:
+                    break
+
+                response.raise_for_status()
+
+                page_jobs = (
+                    parse_careerpointkenya_page(
+                        response.text
+                    )
+                )
+
+                if not page_jobs:
+                    break
+
+                new_on_page = 0
+
+                for job in page_jobs:
+
+                    if job["source_url"] in seen_urls:
+                        continue
+
+                    seen_urls.add(
+                        job["source_url"]
+                    )
+
+                    jobs.append(job)
+
+                    new_on_page += 1
+
+                if new_on_page == 0:
+                    break
+
+            except requests.RequestException as exc:
+
+                logger.warning(
+                    "Career Point Kenya request "
+                    "failed for '%s': %s",
+                    url,
+                    exc,
+                )
+
+                break
+
+            time.sleep(
+                CAREERPOINTKENYA_REQUEST_DELAY
+            )
+
+    logger.info(
+        "Career Point Kenya returned %d "
+        "unique jobs",
+        len(jobs),
+    )
+
+    return jobs
+
+
+# ============================================================
+# CORPORATE STAFFING COLLECTOR
+# ============================================================
+
+CORPORATESTAFFING_DATE_RE = re.compile(
+    # No trailing \b: the page concatenates its "published" and
+    # "modified" dates back to back with no space or punctuation
+    # ("September 9, 2026September 9, 2026"), so a digit is
+    # immediately followed by a letter with no word boundary
+    # between them. The exact {4} digit count already pins the
+    # match without needing one.
+    r"\b(" + MONTHS_PATTERN + r")"
+    r"\s+(\d{1,2}),\s+(\d{4})"
+)
+
+
+def parse_corporatestaffing_page(
+    html_text: str,
+) -> list[dict[str, Any]]:
+    """Parse one Corporate Staffing category page into raw job
+    dicts.
+
+    Same theme family as Career Point Kenya: an h2 heading links
+    to /job/<slug>/, followed directly by a "Month D, YYYY" date
+    line and an excerpt paragraph before the next heading. Titles
+    follow the same "<Title> Job <Company>" convention.
+    """
+
+    soup = BeautifulSoup(
+        html_text,
+        "html.parser",
+    )
+
+    results: list[dict[str, Any]] = []
+
+    seen_hrefs: set[str] = set()
+
+    for heading in soup.find_all(
+        "h2"
+    ):
+
+        link = heading.find(
+            "a",
+            href=True,
+        )
+
+        if not link:
+            continue
+
+        href = link["href"]
+
+        if "/job/" not in href:
+            continue
+
+        href = href.split("?")[0]
+
+        if href in seen_hrefs:
+            continue
+
+        seen_hrefs.add(href)
+
+        heading_text = clean_text(
+            link.get_text()
+        ).strip()
+
+        if not heading_text:
+            continue
+
+        if " Job " in heading_text:
+
+            title, _, company = (
+                heading_text.partition(
+                    " Job "
+                )
+            )
+
+        else:
+
+            title, company = (
+                heading_text,
+                "Unknown",
+            )
+
+        following_text = (
+            _collect_text_after_heading(
+                heading
+            )
+        )
+
+        posted_date = None
+
+        date_match = CORPORATESTAFFING_DATE_RE.search(
+            following_text
+        )
+
+        if date_match:
+
+            month_name, day_str, year_str = (
+                date_match.groups()
+            )
+
+            month = MONTH_NUMBERS.get(
+                month_name
+            )
+
+            if month:
+
+                try:
+
+                    posted_date = date(
+                        int(year_str),
+                        month,
+                        int(day_str),
+                    ).isoformat()
+
+                except ValueError:
+
+                    posted_date = None
+
+        description = normalize_text(
+            following_text
+        )
+
+        results.append({
+
+            "source":
+                "Corporate Staffing",
+
+            "source_url":
+                href,
+
+            "title":
+                title.strip()
+                or "Untitled",
+
+            "company":
+                company.strip()
+                or "Unknown",
+
+            "location":
+                "Kenya",
+
+            "description":
+                description,
+
+            "employment_type":
+                "",
+
+            "posted_date":
+                posted_date,
+
+            "deadline_date":
+                extract_deadline_date(
+                    following_text
+                ),
+
+        })
+
+    return results
+
+
+def fetch_corporatestaffing_jobs() -> list[
+    dict[str, Any]
+]:
+
+    logger.info(
+        "Fetching jobs from Corporate Staffing..."
+    )
+
+    jobs: list[dict[str, Any]] = []
+
+    seen_urls: set[str] = set()
+
+    session = requests.Session()
+
+    session.headers.update({
+
+        "User-Agent":
+            "Mozilla/5.0 (compatible; "
+            "Gunga-Job-Radar/1.0)",
+
+        "Accept":
+            "text/html",
+
+    })
+
+    for category_url in (
+        CORPORATESTAFFING_CATEGORY_URLS
+    ):
+
+        for page in range(
+            1,
+            CORPORATESTAFFING_MAX_PAGES + 1,
+        ):
+
+            url = (
+                category_url
+                if page == 1
+                else (
+                    f"{category_url}"
+                    f"page/{page}/"
+                )
+            )
+
+            try:
+
+                response = session.get(
+                    url,
+                    timeout=REQUEST_TIMEOUT,
+                )
+
+                if response.status_code == 404:
+                    break
+
+                response.raise_for_status()
+
+                page_jobs = (
+                    parse_corporatestaffing_page(
+                        response.text
+                    )
+                )
+
+                if not page_jobs:
+                    break
+
+                new_on_page = 0
+
+                for job in page_jobs:
+
+                    if job["source_url"] in seen_urls:
+                        continue
+
+                    seen_urls.add(
+                        job["source_url"]
+                    )
+
+                    jobs.append(job)
+
+                    new_on_page += 1
+
+                if new_on_page == 0:
+                    break
+
+            except requests.RequestException as exc:
+
+                logger.warning(
+                    "Corporate Staffing request "
+                    "failed for '%s': %s",
+                    url,
+                    exc,
+                )
+
+                break
+
+            time.sleep(
+                CORPORATESTAFFING_REQUEST_DELAY
+            )
+
+    logger.info(
+        "Corporate Staffing returned %d "
+        "unique jobs",
+        len(jobs),
+    )
+
+    return jobs
+
+
+# ============================================================
+# REMOTEOK COLLECTOR
+# ============================================================
+
+def fetch_remoteok_jobs() -> list[
+    dict[str, Any]
+]:
+    """Fetch from RemoteOK's public JSON API (remoteok.com/api).
+
+    No HTML parsing needed — it's a flat JSON array. The first
+    element is always RemoteOK's API-terms/legal notice, not a
+    job (it has no "id" field), so it's skipped. This is a
+    general remote-jobs firehose, not ICT-specific, so like the
+    generic "internships" categories pulled from other sources,
+    relevance is left entirely to score_job downstream rather
+    than pre-filtered here.
+    """
+
+    logger.info(
+        "Fetching jobs from RemoteOK..."
+    )
+
+    jobs: list[dict[str, Any]] = []
+
+    session = requests.Session()
+
+    session.headers.update({
+
+        "User-Agent":
+            "Mozilla/5.0 (compatible; "
+            "Gunga-Job-Radar/1.0)",
+
+        "Accept":
+            "application/json",
+
+    })
+
+    try:
+
+        response = session.get(
+            REMOTEOK_API,
+            timeout=REQUEST_TIMEOUT,
+        )
+
+        response.raise_for_status()
+
+        raw_jobs = response.json()
+
+    except (
+        requests.RequestException,
+        ValueError,
+    ) as exc:
+
+        logger.warning(
+            "RemoteOK request failed: %s",
+            exc,
+        )
+
+        return jobs
+
+    for entry in raw_jobs:
+
+        if not isinstance(entry, dict):
+            continue
+
+        if "id" not in entry:
+            # The legal-notice entry has no id.
+            continue
+
+        apply_url = entry.get(
+            "apply_url"
+        ) or entry.get("url")
+
+        if not apply_url:
+            continue
+
+        title = clean_text(
+            entry.get("position")
+        ).strip()
+
+        if not title:
+            continue
+
+        description_html = entry.get(
+            "description",
+            "",
+        )
+
+        description_text = normalize_text(
+            BeautifulSoup(
+                description_html,
+                "html.parser",
+            ).get_text(
+                separator=" "
+            )
+        )
+
+        location = clean_text(
+            entry.get("location")
+        ).strip() or "Worldwide Remote"
+
+        tags = entry.get("tags") or []
+
+        tag_text = clean_text(tags)
+
+        posted_date = None
+
+        date_str = entry.get("date")
+
+        if date_str:
+
+            try:
+
+                posted_date = (
+                    datetime.fromisoformat(
+                        date_str.replace(
+                            "Z",
+                            "+00:00",
+                        )
+                    )
+                    .date()
+                    .isoformat()
+                )
+
+            except ValueError:
+
+                posted_date = None
+
+        jobs.append({
+
+            "source":
+                "RemoteOK",
+
+            "source_url":
+                apply_url,
+
+            "title":
+                title,
+
+            "company":
+                clean_text(
+                    entry.get("company")
+                ).strip()
+                or "Unknown",
+
+            "location":
+                location,
+
+            "description":
+                (
+                    description_text
+                    + " "
+                    + normalize_text(tag_text)
+                ),
+
+            "employment_type":
+                "",
+
+            "posted_date":
+                posted_date,
+
+            "deadline_date":
+                None,
+
+        })
+
+    time.sleep(
+        REMOTEOK_REQUEST_DELAY
+    )
+
+    logger.info(
+        "RemoteOK returned %d jobs",
+        len(jobs),
+    )
+
+    return jobs
+
+
+# ============================================================
+# WE WORK REMOTELY COLLECTOR
+# ============================================================
+
+def fetch_weworkremotely_jobs() -> list[
+    dict[str, Any]
+]:
+    """Fetch from We Work Remotely's official public RSS feeds.
+
+    Parsed with BeautifulSoup's html.parser rather than a strict
+    XML parser — RSS is simple enough that this reads item/title/
+    description/link/pubDate tags fine without adding an lxml
+    dependency, matching how the rest of this file avoids extra
+    packages.
+    """
+
+    logger.info(
+        "Fetching jobs from We Work Remotely..."
+    )
+
+    jobs: list[dict[str, Any]] = []
+
+    seen_urls: set[str] = set()
+
+    session = requests.Session()
+
+    session.headers.update({
+
+        "User-Agent":
+            "Mozilla/5.0 (compatible; "
+            "Gunga-Job-Radar/1.0)",
+
+        "Accept":
+            "application/rss+xml, text/xml",
+
+    })
+
+    for feed_url in (
+        WEWORKREMOTELY_RSS_URLS
+    ):
+
+        try:
+
+            response = session.get(
+                feed_url,
+                timeout=REQUEST_TIMEOUT,
+            )
+
+            response.raise_for_status()
+
+            soup = BeautifulSoup(
+                response.text,
+                "html.parser",
+            )
+
+        except requests.RequestException as exc:
+
+            logger.warning(
+                "We Work Remotely request "
+                "failed for '%s': %s",
+                feed_url,
+                exc,
+            )
+
+            continue
+
+        for item in soup.find_all("item"):
+
+            # NOTE: <link> is a void/self-closing element in
+            # HTML5, so html.parser silently empties it and its
+            # text is unrecoverable via get_text(). <guid> is a
+            # plain container tag and, per WWR's own feed, always
+            # duplicates the exact same job permalink — so it's
+            # used here as the reliable stand-in.
+            guid_tag = item.find("guid")
+
+            if not guid_tag:
+                continue
+
+            source_url = clean_text(
+                guid_tag.get_text()
+            ).strip()
+
+            if not source_url:
+                continue
+
+            source_url = source_url.split(
+                "?"
+            )[0]
+
+            if source_url in seen_urls:
+                continue
+
+            seen_urls.add(source_url)
+
+            title_tag = item.find("title")
+
+            raw_title = clean_text(
+                title_tag.get_text()
+                if title_tag
+                else ""
+            ).strip()
+
+            # Titles are formatted "<Company>: <Title>"
+            if ": " in raw_title:
+
+                company, _, title = (
+                    raw_title.partition(
+                        ": "
+                    )
+                )
+
+            else:
+
+                company, title = (
+                    "Unknown",
+                    raw_title,
+                )
+
+            if not title:
+                continue
+
+            region_tag = item.find("region")
+
+            location = clean_text(
+                region_tag.get_text()
+                if region_tag
+                else ""
+            ).strip() or "Worldwide Remote"
+
+            description_tag = item.find(
+                "description"
+            )
+
+            description_html = (
+                description_tag.get_text()
+                if description_tag
+                else ""
+            )
+
+            description_text = normalize_text(
+                BeautifulSoup(
+                    description_html,
+                    "html.parser",
+                ).get_text(
+                    separator=" "
+                )
+            )
+
+            pubdate_tag = item.find("pubdate")
+
+            posted_date = None
+
+            if pubdate_tag:
+
+                pub_text = clean_text(
+                    pubdate_tag.get_text()
+                ).strip()
+
+                try:
+
+                    posted_date = (
+                        datetime.strptime(
+                            pub_text[:25],
+                            "%a, %d %b %Y %H:%M:%S",
+                        )
+                        .date()
+                        .isoformat()
+                    )
+
+                except ValueError:
+
+                    posted_date = None
+
+            jobs.append({
+
+                "source":
+                    "We Work Remotely",
+
+                "source_url":
+                    source_url,
+
+                "title":
+                    title.strip(),
+
+                "company":
+                    company.strip()
+                    or "Unknown",
+
+                "location":
+                    location,
+
+                "description":
+                    description_text,
+
+                "employment_type":
+                    "",
+
+                "posted_date":
+                    posted_date,
+
+                "deadline_date":
+                    None,
+
+            })
+
+        time.sleep(
+            WEWORKREMOTELY_REQUEST_DELAY
+        )
+
+    logger.info(
+        "We Work Remotely returned %d "
+        "unique jobs",
+        len(jobs),
+    )
+
+    return jobs
+
+
+# ============================================================
+# RELIEFWEB COLLECTOR
+# ============================================================
+
+def fetch_reliefweb_jobs() -> list[
+    dict[str, Any]
+]:
+    """Fetch ICT-relevant postings from ReliefWeb's public jobs
+    API (humanitarian/NGO/ICT4D sector).
+
+    NOTE: ReliefWeb has required a *pre-approved* appname since
+    1 Nov 2025. If this consistently returns 0 jobs in the scan
+    logs, RELIEFWEB_APPNAME likely needs to be registered and
+    approved at https://apidoc.reliefweb.int/ first — that's a
+    one-time manual step outside this script, not a code bug.
+    """
+
+    logger.info(
+        "Fetching jobs from ReliefWeb..."
+    )
+
+    jobs: list[dict[str, Any]] = []
+
+    session = requests.Session()
+
+    session.headers.update({
+
+        "User-Agent":
+            "Mozilla/5.0 (compatible; "
+            "Gunga-Job-Radar/1.0)",
+
+        "Accept":
+            "application/json",
+
+    })
+
+    params = {
+
+        "appname":
+            RELIEFWEB_APPNAME,
+
+        "query[value]":
+            RELIEFWEB_QUERY,
+
+        "query[operator]":
+            "OR",
+
+        "limit":
+            50,
+
+        "sort[]":
+            "date:desc",
+
+        "fields[include][]": [
+
+            "title",
+
+            "url_alias",
+
+            "date.created",
+
+            "body",
+
+            "source.name",
+
+            "country.name",
+
+        ],
+
+    }
+
+    try:
+
+        response = session.get(
+            RELIEFWEB_API,
+            params=params,
+            timeout=REQUEST_TIMEOUT,
+        )
+
+        response.raise_for_status()
+
+        payload = response.json()
+
+    except (
+        requests.RequestException,
+        ValueError,
+    ) as exc:
+
+        logger.warning(
+            "ReliefWeb request failed: %s",
+            exc,
+        )
+
+        return jobs
+
+    for entry in payload.get("data", []):
+
+        fields = entry.get("fields", {})
+
+        title = clean_text(
+            fields.get("title")
+        ).strip()
+
+        source_url = fields.get(
+            "url_alias"
+        )
+
+        if not title or not source_url:
+            continue
+
+        source_names = [
+            source.get("name", "")
+            for source in (
+                fields.get("source")
+                or []
+            )
+        ]
+
+        company = (
+            clean_text(source_names).strip()
+            or "Unknown"
+        )
+
+        country_names = [
+            country.get("name", "")
+            for country in (
+                fields.get("country")
+                or []
+            )
+        ]
+
+        location = (
+            clean_text(country_names).strip()
+            or "Worldwide Remote"
+        )
+
+        body_text = normalize_text(
+            BeautifulSoup(
+                fields.get("body", ""),
+                "html.parser",
+            ).get_text(
+                separator=" "
+            )
+        )
+
+        posted_date = None
+
+        created = (
+            fields.get("date", {})
+            .get("created")
+        )
+
+        if created:
+
+            try:
+
+                posted_date = (
+                    datetime.fromisoformat(
+                        created.replace(
+                            "Z",
+                            "+00:00",
+                        )
+                    )
+                    .date()
+                    .isoformat()
+                )
+
+            except ValueError:
+
+                posted_date = None
+
+        jobs.append({
+
+            "source":
+                "ReliefWeb",
+
+            "source_url":
+                source_url,
+
+            "title":
+                title,
+
+            "company":
+                company,
+
+            "location":
+                location,
+
+            "description":
+                body_text,
+
+            "employment_type":
+                "",
+
+            "posted_date":
+                posted_date,
+
+            "deadline_date":
+                extract_deadline_date(
+                    body_text
+                ),
+
+        })
+
+    time.sleep(
+        RELIEFWEB_REQUEST_DELAY
+    )
+
+    logger.info(
+        "ReliefWeb returned %d jobs",
+        len(jobs),
+    )
+
+    return jobs
+
+
+# ============================================================
+# PSC (PUBLIC SERVICE COMMISSION) COLLECTOR
+# ============================================================
+
+def parse_psc_page(
+    html_text: str,
+) -> list[dict[str, Any]]:
+    """Parse the PSC active-adverts page into raw job dicts.
+
+    An old-style ASP.NET WebForms page — plain server-rendered
+    HTML, no login needed to view listings. Each advert links to
+    AdvertDetailsExt.aspx?kpx=<ref>. The page shows "Sorry there
+    are no job vacancies at the moment" with zero adverts far
+    more often than not, so an empty result here is the normal
+    case, not a parsing failure.
+    """
+
+    soup = BeautifulSoup(
+        html_text,
+        "html.parser",
+    )
+
+    results: list[dict[str, Any]] = []
+
+    seen_hrefs: set[str] = set()
+
+    for link in soup.find_all(
+        "a",
+        href=True,
+    ):
+
+        href = link["href"]
+
+        if "AdvertDetailsExt.aspx" not in href:
+            continue
+
+        if href.startswith("/"):
+
+            href = (
+                "https://www.psckjobs.go.ke"
+                + href
+            )
+
+        elif not href.startswith("http"):
+
+            href = (
+                "https://www.psckjobs.go.ke/"
+                + href
+            )
+
+        if href in seen_hrefs:
+            continue
+
+        seen_hrefs.add(href)
+
+        title = clean_text(
+            link.get_text()
+        ).strip()
+
+        row = (
+            link.find_parent("tr")
+            or link.find_parent("div")
+            or link
+        )
+
+        if not title or title.lower() in (
+            "view",
+            "apply",
+            "details",
+            "more",
+        ):
+
+            # Icon/button-only link text. The advert's title
+            # column position relative to a deadline/status
+            # column isn't known without a live example to check
+            # against (the page shows zero adverts far more often
+            # than not), so rather than guess a fixed column
+            # order, take every other cell in the same row and
+            # use the longest one that isn't itself a date or a
+            # bare action word — a real job title reads far
+            # longer than either of those.
+            candidates: list[str] = []
+
+            for cell in row.find_all(
+                ["td", "span", "div"]
+            ):
+
+                if link in cell.descendants:
+                    continue
+
+                text = clean_text(
+                    cell.get_text()
+                ).strip()
+
+                if not text or len(text) > 200:
+                    continue
+
+                if text.lower() in (
+                    "view",
+                    "apply",
+                    "details",
+                    "more",
+                ):
+
+                    continue
+
+                if DEADLINE_KEYWORD_RE.search(
+                    text
+                ):
+
+                    continue
+
+                candidates.append(text)
+
+            if candidates:
+
+                title = max(
+                    candidates,
+                    key=len,
+                )
+
+        if not title:
+            continue
+
+        row_text = " ".join(
+            row.get_text(
+                separator=" "
+            ).split()
+        )
+
+        results.append({
+
+            "source":
+                "PSC",
+
+            "source_url":
+                href,
+
+            "title":
+                title,
+
+            "company":
+                "Public Service Commission",
+
+            "location":
+                "Kenya",
+
+            "description":
+                normalize_text(row_text),
+
+            "employment_type":
+                "",
+
+            "posted_date":
+                None,
+
+            "deadline_date":
+                extract_deadline_date(
+                    row_text
+                ),
+
+        })
+
+    return results
+
+
+def fetch_psc_jobs() -> list[
+    dict[str, Any]
+]:
+
+    logger.info(
+        "Fetching jobs from PSC..."
+    )
+
+    jobs: list[dict[str, Any]] = []
+
+    session = requests.Session()
+
+    session.headers.update({
+
+        "User-Agent":
+            "Mozilla/5.0 (compatible; "
+            "Gunga-Job-Radar/1.0)",
+
+        "Accept":
+            "text/html",
+
+    })
+
+    try:
+
+        response = session.get(
+            PSC_URL,
+            timeout=REQUEST_TIMEOUT,
+        )
+
+        response.raise_for_status()
+
+        jobs = parse_psc_page(
+            response.text
+        )
+
+    except requests.RequestException as exc:
+
+        logger.warning(
+            "PSC request failed: %s",
+            exc,
+        )
+
+    time.sleep(
+        PSC_REQUEST_DELAY
+    )
+
+    logger.info(
+        "PSC returned %d jobs",
+        len(jobs),
+    )
+
+    return jobs
+
+
+# ============================================================
 # MATCHING ENGINE
 # ============================================================
 
@@ -3382,572 +4897,4 @@ def send_gmail_digest(
 
             continue
 
-        lines.extend([
-
-            "",
-
-            "=" * 50,
-
-            heading,
-
-            "=" * 50,
-
-        ])
-
-        for job in sorted(
-
-            group,
-
-            key=lambda item:
-                -int(
-                    item["score"]
-                    or 0
-                ),
-
-        ):
-
-            lines.extend([
-
-                "",
-
-                (
-                    f"{job['score']}% — "
-                    f"{job['title']}"
-                ),
-
-                (
-                    f"Company: "
-                    f"{job['company']}"
-                ),
-
-                (
-                    f"Location: "
-                    f"{job['location']}"
-                ),
-
-                (
-                    f"Apply: "
-                    f"{job['source_url']}"
-                ),
-
-            ])
-
-    body = "\n".join(
-        lines
-    )
-
-    message = MIMEMultipart()
-
-    message["From"] = (
-        GMAIL_ADDRESS
-    )
-
-    message["To"] = (
-        GMAIL_ADDRESS
-    )
-
-    message["Subject"] = (
-        "Gunga Job Radar — "
-        f"{len(jobs)} new jobs"
-    )
-
-    message.attach(
-        MIMEText(
-            body,
-            "plain",
-            "utf-8",
-        )
-    )
-
-    with smtplib.SMTP(
-        "smtp.gmail.com",
-        587,
-        timeout=30,
-    ) as server:
-
-        server.starttls()
-
-        server.login(
-            GMAIL_ADDRESS,
-            GMAIL_APP_PASSWORD,
-        )
-
-        server.send_message(
-            message
-        )
-
-    logger.info(
-        "Gmail digest sent successfully."
-    )
-
-    return True
-
-
-# ============================================================
-# SCAN
-# ============================================================
-
-def run_scan(
-    database: Database,
-) -> None:
-
-    logger.info(
-        "========== SCAN START =========="
-    )
-
-    himalayas_jobs = fetch_himalayas_jobs()
-
-    myjobmag_jobs = fetch_myjobmag_jobs()
-
-    brightermonday_jobs = fetch_brightermonday_jobs()
-
-    openedcareer_jobs = fetch_openedcareer_jobs()
-
-    fuzu_jobs = fetch_fuzu_jobs()
-
-    jobs = (
-        himalayas_jobs
-        + myjobmag_jobs
-        + brightermonday_jobs
-        + openedcareer_jobs
-        + fuzu_jobs
-    )
-
-    logger.info(
-        "Processing %d jobs "
-        "(%d Himalayas, %d MyJobMag, "
-        "%d BrighterMonday, "
-        "%d OpenedCareer, %d Fuzu)...",
-        len(jobs),
-        len(himalayas_jobs),
-        len(myjobmag_jobs),
-        len(brightermonday_jobs),
-        len(openedcareer_jobs),
-        len(fuzu_jobs),
-    )
-
-    jobs_fetched = len(jobs)
-    jobs_processed = 0
-    jobs_new = 0
-    strong_matches = 0
-    consider_matches = 0
-    telegram_attempts = 0
-    telegram_sent = 0
-    telegram_failures = 0
-
-    for job in jobs:
-
-        source_url = job.get(
-            "source_url"
-        )
-
-        if not source_url:
-            continue
-
-        try:
-
-            # ================================================
-            # Score the job (both new and existing)
-            # ================================================
-
-            (
-                score,
-                tier,
-                reasons,
-                blockers,
-                matched_skills,
-                matched_locations,
-                eligibility,
-            ) = score_job(
-                job
-            )
-
-            # ================================================
-            # Attempt to insert/update in database
-            # ================================================
-
-            job_id = save_job(
-
-                database,
-
-                job,
-
-                score,
-
-                tier,
-
-                reasons,
-
-                blockers,
-
-                matched_skills,
-
-                matched_locations,
-
-                eligibility,
-
-            )
-
-            jobs_processed += 1
-
-            # If insert_job returned None, it was a duplicate.
-            # It may still be an un-alerted strong match from a
-            # scan where the Telegram send failed, so look it
-            # up and retry rather than skipping outright.
-            if job_id is None:
-
-                logger.info(
-                    "JOB DUPLICATE | %s | %s%%",
-                    job["title"],
-                    score,
-                )
-
-                existing = database.get_job_by_url(
-                    source_url
-                )
-
-                if (
-                    existing
-                    and existing["tier"] == "strong"
-                    and not existing["telegram_sent"]
-                ):
-
-                    telegram_attempts += 1
-
-                    try:
-
-                        send_telegram_alert(
-                            job,
-                            existing["score"],
-                            reasons,
-                            eligibility,
-                        )
-
-                        database.mark_telegram_sent(
-                            existing["id"]
-                        )
-
-                        telegram_sent += 1
-
-                        logger.info(
-                            "Telegram alert "
-                            "(retry) sent for "
-                            "job %s",
-                            existing["id"],
-                        )
-
-                    except Exception as exc:
-
-                        telegram_failures += 1
-
-                        logger.error(
-                            "Telegram retry failed "
-                            "for job %s: %s",
-                            existing["id"],
-                            exc,
-                        )
-
-                continue
-
-            # New job was inserted
-            jobs_new += 1
-
-            logger.info(
-
-                "NEW JOB | %s | %s%% | %s",
-
-                job["title"],
-
-                score,
-
-                tier,
-
-            )
-
-            # ================================================
-            # Handle strong matches
-            # ================================================
-
-            if tier == "strong":
-
-                strong_matches += 1
-
-                telegram_attempts += 1
-
-                try:
-
-                    send_telegram_alert(
-
-                        job,
-
-                        score,
-
-                        reasons,
-
-                        eligibility,
-
-                    )
-
-                    database.mark_telegram_sent(
-                        job_id
-                    )
-
-                    telegram_sent += 1
-
-                    logger.info(
-
-                        "Telegram alert sent "
-                        "for job %s",
-
-                        job_id,
-
-                    )
-
-                except Exception as exc:
-
-                    telegram_failures += 1
-
-                    logger.error(
-
-                        "Telegram alert failed "
-                        "for job %s: %s",
-
-                        job_id,
-
-                        exc,
-
-                    )
-
-            elif tier == "consider":
-
-                consider_matches += 1
-
-        except DatabaseError as exc:
-
-            logger.error(
-
-                "Database error processing "
-                "%s: %s",
-
-                source_url,
-
-                exc,
-
-            )
-
-        except Exception as exc:
-
-            logger.exception(
-
-                "Unexpected error processing job: %s",
-
-                exc,
-
-            )
-
-    logger.info("")
-    logger.info(
-        "========== SCAN METRICS =========="
-    )
-    logger.info(
-        "Jobs fetched: %d",
-        jobs_fetched,
-    )
-    logger.info(
-        "Jobs processed: %d",
-        jobs_processed,
-    )
-    logger.info(
-        "New jobs saved: %d",
-        jobs_new,
-    )
-    logger.info(
-        "Strong matches: %d",
-        strong_matches,
-    )
-    logger.info(
-        "Consider matches: %d",
-        consider_matches,
-    )
-    logger.info(
-        "Telegram attempts: %d",
-        telegram_attempts,
-    )
-    logger.info(
-        "Telegram sent: %d",
-        telegram_sent,
-    )
-    logger.info(
-        "Telegram failures: %d",
-        telegram_failures,
-    )
-    logger.info(
-        "========== SCAN COMPLETE =========="
-    )
-
-
-# ============================================================
-# DIGEST
-# ============================================================
-
-def run_digest(
-    database: Database,
-) -> None:
-
-    logger.info(
-        "========== DIGEST START =========="
-    )
-
-    jobs = database.get_undigested_jobs()
-
-    logger.info(
-        "%d jobs pending digest",
-        len(jobs),
-    )
-
-    if not jobs:
-
-        logger.info(
-            "Nothing to send."
-        )
-
-        logger.info(
-            "========== DIGEST COMPLETE =========="
-        )
-
-        return
-
-    try:
-
-        send_gmail_digest(
-            jobs
-        )
-
-        job_ids = [
-
-            int(job["id"])
-
-            for job in jobs
-
-            if job.get("id") is not None
-
-        ]
-
-        database.mark_jobs_digested(
-            job_ids
-        )
-
-        logger.info(
-            "Marked %d jobs as digested.",
-            len(job_ids),
-        )
-
-    except Exception as exc:
-
-        logger.exception(
-
-            "Digest failed. "
-            "Jobs were NOT marked "
-            "as digested: %s",
-
-            exc,
-
-        )
-
-        raise
-
-    logger.info(
-        "========== DIGEST COMPLETE =========="
-    )
-
-
-# ============================================================
-# MAIN
-# ============================================================
-
-def main() -> int:
-
-    parser = argparse.ArgumentParser(
-
-        description=(
-            "Gunga Job Radar"
-        )
-
-    )
-
-    parser.add_argument(
-
-        "--mode",
-
-        choices=[
-            "scan",
-            "digest",
-            "both",
-        ],
-
-        default="both",
-
-        help=(
-            "Operation to run."
-        ),
-
-    )
-
-    args = parser.parse_args()
-
-    logger.info(
-
-        "Starting Gunga Job Radar "
-        "in %s mode...",
-
-        args.mode,
-
-    )
-
-    database = build_database()
-
-    try:
-
-        if args.mode in (
-            "scan",
-            "both",
-        ):
-
-            run_scan(
-                database
-            )
-
-        if args.mode in (
-            "digest",
-            "both",
-        ):
-
-            run_digest(
-                database
-            )
-
-    except Exception as exc:
-
-        logger.exception(
-            "Fatal error: %s",
-            exc,
-        )
-
-        return 1
-
-    logger.info(
-        "Gunga Job Radar finished successfully."
-    )
-
-    return 0
-
-
-# ============================================================
-# ENTRY POINT
-# ============================================================
-
-if __name__ == "__main__":
-
-    raise SystemExit(
-        main()
-)
+        lines.exte
