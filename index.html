@@ -164,6 +164,56 @@
     letter-spacing: 0.4px;
   }
 
+  /* ================= FREQUENCY TABS ================= */
+  /* Primary Kenya/Remote/Other split — the eligibility axis
+     matters enough to Evans's search that it gets its own
+     tuned-in "channel selector" up top, rather than living as
+     just one more dropdown buried in the filter console below. */
+
+  .freq-tabs {
+    display: flex;
+    gap: 6px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 4px;
+    margin-bottom: 18px;
+  }
+
+  .freq-tab {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    font-family: 'Inter', sans-serif;
+    font-size: 13.5px;
+    font-weight: 500;
+    padding: 10px 8px;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+  }
+
+  .freq-tab:hover { color: var(--text); }
+
+  .freq-tab-count {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    opacity: 0.8;
+  }
+
+  .freq-tab.active {
+    background: var(--panel-raised);
+    color: var(--sweep);
+    box-shadow: 0 0 0 1px var(--sweep) inset;
+  }
+
+  .freq-tab.active .freq-tab-count { color: var(--sweep); }
+
   /* ================= FILTER CONSOLE ================= */
 
   .console {
@@ -521,20 +571,27 @@
       </div>
     </div>
 
+    <div class="freq-tabs" id="freqTabs" role="tablist" aria-label="Job frequency band">
+      <button class="freq-tab active" data-tab="kenya" role="tab" aria-selected="true">
+        🇰🇪 Kenya
+        <span class="freq-tab-count" id="tabCountKenya">—</span>
+      </button>
+      <button class="freq-tab" data-tab="remote" role="tab" aria-selected="false">
+        🌍 Remote
+        <span class="freq-tab-count" id="tabCountRemote">—</span>
+      </button>
+      <button class="freq-tab" data-tab="other" role="tab" aria-selected="false">
+        ❓ Other
+        <span class="freq-tab-count" id="tabCountOther">—</span>
+      </button>
+    </div>
+
     <div class="console">
       <div class="console-row">
         <input type="text" id="search" placeholder="Search title or company…">
         <input type="text" id="locationFilter" placeholder="Location contains… (Kilifi, Mombasa, Nairobi)">
       </div>
       <div class="console-row">
-        <select id="eligibilityFilter">
-          <option value="all">All eligibility</option>
-          <option value="KENYA">🇰🇪 Kenya</option>
-          <option value="REMOTE-AFRICA">🌍 Africa remote</option>
-          <option value="REMOTE-WORLDWIDE">🌍 Worldwide remote</option>
-          <option value="REMOTE-RESTRICTED">⚠️ Restricted</option>
-          <option value="UNKNOWN">❓ Unclear</option>
-        </select>
         <select id="tierFilter">
           <option value="all">All tiers</option>
           <option value="strong">Strong</option>
@@ -608,12 +665,25 @@ const ELIGIBILITY_LABELS = {
   "UNKNOWN": { text: "❓ LOCATION UNCLEAR", class: "elig-unknown" },
 };
 
+// The three tabs' underlying eligibility values. "Kenya" is its
+// own clean bucket; "Remote" groups the two eligibility values
+// that are genuinely open to Evans as remote work; "Other" holds
+// the ones that need a closer look — geographically restricted
+// postings, and ones where eligibility couldn't be determined at
+// all — rather than mixing either of those into "Remote" and
+// making it look more promising than it is.
+const TAB_ELIGIBILITY = {
+  kenya: ["KENYA"],
+  remote: ["REMOTE-AFRICA", "REMOTE-WORLDWIDE"],
+  other: ["REMOTE-RESTRICTED", "UNKNOWN"],
+};
+
 const state = {
   page: 0,
+  activeTab: "kenya",
   filters: {
     search: "",
     location: "",
-    eligibility: "all",
     tier: "all",
     source: "all",
     applied: "all",
@@ -742,9 +812,7 @@ function buildBaseQuery(countOnly = false) {
     query = query.ilike("location", `%${term}%`);
   }
 
-  if (f.eligibility !== "all") {
-    query = query.eq("eligibility", f.eligibility);
-  }
+  query = query.in("eligibility", TAB_ELIGIBILITY[state.activeTab]);
 
   if (f.tier !== "all") {
     query = query.eq("tier", f.tier);
@@ -777,6 +845,43 @@ async function refreshStats() {
   document.getElementById("statStrong").textContent = strong ?? "—";
   document.getElementById("statApplied").textContent = applied ?? "—";
   document.getElementById("statSaved").textContent = saved ?? "—";
+}
+
+// Tab pill counts are deliberately global (all jobs in that
+// eligibility bucket), not scoped to the search/tier/source
+// filters currently applied — same convention as the "Tracked"
+// stat above, which also ignores active filters. That keeps the
+// tabs answering "how many Kenya jobs exist at all" rather than
+// a number that shifts confusingly every time a filter changes.
+async function refreshTabCounts() {
+  const results = await Promise.all(
+    Object.entries(TAB_ELIGIBILITY).map(([tab, values]) =>
+      supabase.from("jobs").select("id", { count: "exact", head: true }).in("eligibility", values)
+    )
+  );
+
+  document.getElementById("tabCountKenya").textContent = results[0].count ?? "—";
+  document.getElementById("tabCountRemote").textContent = results[1].count ?? "—";
+  document.getElementById("tabCountOther").textContent = results[2].count ?? "—";
+}
+
+function wireFreqTabs() {
+  document.querySelectorAll(".freq-tab").forEach(button => {
+    button.addEventListener("click", () => {
+      if (button.dataset.tab === state.activeTab) return;
+
+      document.querySelectorAll(".freq-tab").forEach(b => {
+        b.classList.remove("active");
+        b.setAttribute("aria-selected", "false");
+      });
+
+      button.classList.add("active");
+      button.setAttribute("aria-selected", "true");
+
+      state.activeTab = button.dataset.tab;
+      loadJobs(true);
+    });
+  });
 }
 
 function renderCard(job) {
@@ -989,10 +1094,10 @@ function wireControls() {
     loadJobs(true);
   }, 350));
 
-  ["eligibilityFilter", "tierFilter", "sourceFilter", "appliedFilter", "savedFilter", "sortFilter"].forEach(id => {
+  ["tierFilter", "sourceFilter", "appliedFilter", "savedFilter", "sortFilter"].forEach(id => {
     document.getElementById(id).addEventListener("change", e => {
       const key = id.replace("Filter", "");
-      state.filters[key === "eligibility" ? "eligibility" : key] = e.target.value;
+      state.filters[key] = e.target.value;
       loadJobs(true);
     });
   });
@@ -1010,7 +1115,8 @@ async function init() {
   document.getElementById("app").classList.remove("hidden");
 
   wireControls();
-  await refreshStats();
+  wireFreqTabs();
+  await Promise.all([refreshStats(), refreshTabCounts()]);
   await loadJobs(true);
 }
 
