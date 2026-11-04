@@ -4,11 +4,14 @@ Phase 4 — Kenya-aware job matching
 
 Pipeline:
 
-    Himalayas API   MyJobMag   BrighterMonday   OpenedCareer   Fuzu
-    Career Point Kenya   Corporate Staffing   RemoteOK
-    We Work Remotely   ReliefWeb   PSC
+    MyJobMag   BrighterMonday   OpenedCareer   Fuzu
+    Career Point Kenya   Corporate Staffing   ReliefWeb   PSC
           ↓             ↓             ↓               ↓         ↓
           └─────────────┴─────────────┴───────────────┴─────────┘
+                                       ↓
+              Kenya-only gate (remote jobs dropped)
+                                       ↓
+          ICT jobs  /  Form 4 (KCSE-minimum) jobs
                                        ↓
                                   Collector
                    ↓
@@ -58,6 +61,14 @@ from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
 from database.db import Database, DatabaseError
+from kenya_jobs import (
+    REMOTE_ELIGIBILITIES,
+    classify_zone,
+    evaluate_form4,
+    form4_score,
+    looks_remote,
+    parse_myjobmag_detail,
+)
 
 
 # ============================================================
@@ -107,19 +118,25 @@ logger = logging.getLogger(
 # CONFIGURATION
 # ============================================================
 
-HIMALAYAS_API = (
-    "https://himalayas.app/jobs/api/search"
-)
-
 REQUEST_TIMEOUT = 30
 
-HIMALAYAS_REQUEST_DELAY = 0.75
 
 MYJOBMAG_CATEGORY_URLS = [
 
     "https://www.myjobmag.co.ke/jobs-by-field/information-technology",
 
     "https://www.myjobmag.co.ke/jobs-by-field/internships",
+
+]
+
+# Education-level pages: jobs MyJobMag tags as open to KCSE /
+# First-School-Leaving holders. These feed the "Form 4" category and
+# are checked again (evaluate_form4) before anything is saved.
+MYJOBMAG_FORM4_URLS = [
+
+    "https://www.myjobmag.co.ke/jobs-by-education/kcse",
+
+    "https://www.myjobmag.co.ke/jobs-by-education/fslc",
 
 ]
 
@@ -187,27 +204,6 @@ CORPORATESTAFFING_MAX_PAGES = 3
 
 CORPORATESTAFFING_REQUEST_DELAY = 1.0
 
-REMOTEOK_API = (
-    "https://remoteok.com/api"
-)
-
-REMOTEOK_REQUEST_DELAY = 0.5
-
-# All-in-one "Programming" feed covers full/back/front-end, plus
-# Devops and Sysadmin separately — this is the closest fit to
-# Evans's ICT/data-entry target on a board that skews senior and
-# has no "entry level" category of its own. score_job's normal
-# title/skill matching does the relevance filtering downstream,
-# same as it does for every other source.
-WEWORKREMOTELY_RSS_URLS = [
-
-    "https://weworkremotely.com/categories/remote-programming-jobs.rss",
-
-    "https://weworkremotely.com/categories/remote-devops-sysadmin-jobs.rss",
-
-]
-
-WEWORKREMOTELY_REQUEST_DELAY = 1.0
 
 # ReliefWeb's API has required a *pre-approved* appname since
 # 1 Nov 2025 (previously any string worked). If this source comes
@@ -894,373 +890,6 @@ def extract_deadline_date(
 
 
 # ============================================================
-# HIMALAYAS COLLECTOR
-# ============================================================
-
-def fetch_himalayas_jobs() -> list[
-    dict[str, Any]
-]:
-
-    logger.info(
-        "Fetching jobs from Himalayas..."
-    )
-
-    keywords = [
-
-        "ICT",
-        "IT support",
-        "IT technician",
-
-        "help desk",
-        "helpdesk",
-
-        "technical support",
-
-        "web developer",
-
-        "frontend developer",
-
-        "software developer",
-
-        "networking",
-
-        "computer technician",
-
-        "JavaScript",
-
-        "React",
-
-        "Node.js",
-
-        "Kotlin",
-
-        "Android",
-
-    ]
-
-    jobs: list[
-        dict[str, Any]
-    ] = []
-
-    seen_urls: set[str] = set()
-
-    session = requests.Session()
-
-    session.headers.update({
-
-        "User-Agent":
-            "Gunga-Job-Radar/1.0",
-
-        "Accept":
-            "application/json",
-
-    })
-
-    for keyword in keywords:
-
-        params = {
-
-            "q": keyword,
-
-            "worldwide": "true",
-
-            "sort": "recent",
-
-            "page": 1,
-
-        }
-
-        try:
-
-            response = session.get(
-                HIMALAYAS_API,
-                params=params,
-                timeout=REQUEST_TIMEOUT,
-            )
-
-            response.raise_for_status()
-
-            data = response.json()
-
-            raw_jobs = data.get(
-                "jobs",
-                [],
-            )
-
-            if not isinstance(
-                raw_jobs,
-                list,
-            ):
-
-                raw_jobs = []
-
-            for item in raw_jobs:
-
-                if not isinstance(
-                    item,
-                    dict,
-                ):
-
-                    continue
-
-                title = clean_text(
-                    item.get("title")
-                ).strip()
-
-                company = clean_text(
-                    item.get(
-                        "companyName"
-                    )
-                ).strip()
-
-                description = clean_text(
-                    item.get(
-                        "description"
-                    )
-                    or item.get(
-                        "excerpt"
-                    )
-                ).strip()
-
-                application_url = clean_text(
-                    item.get(
-                        "applicationLink"
-                    )
-                ).strip()
-
-                guid = clean_text(
-                    item.get(
-                        "guid"
-                    )
-                ).strip()
-
-                source_url = (
-                    application_url
-                    or (
-                        "https://himalayas.app/jobs/"
-                        + guid
-                        if guid
-                        else ""
-                    )
-                )
-
-                if not source_url:
-
-                    continue
-
-                if source_url in seen_urls:
-
-                    continue
-
-                seen_urls.add(
-                    source_url
-                )
-
-                restrictions = (
-                    item.get(
-                        "locationRestrictions"
-                    )
-                    or []
-                )
-
-                if isinstance(
-                    restrictions,
-                    list,
-                ):
-
-                    location = ", ".join(
-                        clean_text(x)
-                        for x in restrictions
-                        if clean_text(x)
-                    )
-
-                else:
-
-                    location = clean_text(
-                        restrictions
-                    )
-
-                if not location:
-
-                    location = (
-                        "Remote / Worldwide"
-                    )
-
-                employment_type = clean_text(
-                    item.get(
-                        "employmentType"
-                    )
-                )
-
-                categories = (
-                    item.get(
-                        "categories"
-                    )
-                    or item.get(
-                        "category"
-                    )
-                    or []
-                )
-
-                category_text = clean_text(
-                    categories
-                )
-
-                min_salary = item.get(
-                    "minSalary"
-                )
-
-                max_salary = item.get(
-                    "maxSalary"
-                )
-
-                currency = clean_text(
-                    item.get(
-                        "currency"
-                    )
-                )
-
-                salary = ""
-
-                if (
-                    min_salary is not None
-                    and max_salary is not None
-                ):
-
-                    try:
-
-                        salary = (
-                            f"{currency} "
-                            f"{int(min_salary):,} - "
-                            f"{int(max_salary):,}"
-                        )
-
-                    except (
-                        TypeError,
-                        ValueError,
-                    ):
-
-                        salary = (
-                            f"{currency} "
-                            f"{min_salary} - "
-                            f"{max_salary}"
-                        )
-
-                full_description = "\n".join(
-
-                    part
-
-                    for part in [
-
-                        description,
-
-                        category_text,
-
-                        employment_type,
-
-                        salary,
-
-                    ]
-
-                    if part
-
-                )
-
-                posted_raw = (
-                    item.get("pubDate")
-                    or item.get("publishedAt")
-                    or item.get("postedAt")
-                    or item.get("createdAt")
-                )
-
-                posted_date = None
-
-                if posted_raw:
-
-                    try:
-
-                        posted_date = (
-                            datetime.fromisoformat(
-                                str(posted_raw)
-                                .replace(
-                                    "Z",
-                                    "+00:00",
-                                )
-                            )
-                            .date()
-                            .isoformat()
-                        )
-
-                    except ValueError:
-
-                        posted_date = None
-
-                jobs.append({
-
-                    "source":
-                        "Himalayas",
-
-                    "source_url":
-                        source_url,
-
-                    "title":
-                        title
-                        or "Untitled",
-
-                    "company":
-                        company
-                        or "Unknown",
-
-                    "location":
-                        location,
-
-                    "description":
-                        full_description,
-
-                    "employment_type":
-                        employment_type,
-
-                    "posted_date":
-                        posted_date,
-
-                    "deadline_date":
-                        extract_deadline_date(
-                            full_description
-                        ),
-
-                })
-
-        except requests.RequestException as exc:
-
-            logger.warning(
-                "Himalayas request failed "
-                "for '%s': %s",
-                keyword,
-                exc,
-            )
-
-        except ValueError as exc:
-
-            logger.warning(
-                "Invalid JSON returned by "
-                "Himalayas for '%s': %s",
-                keyword,
-                exc,
-            )
-
-        time.sleep(
-            HIMALAYAS_REQUEST_DELAY
-        )
-
-    logger.info(
-        "Himalayas returned %d unique jobs",
-        len(jobs),
-    )
-
-    return jobs
-
-
-# ============================================================
 # MYJOBMAG COLLECTOR
 # ============================================================
 
@@ -1532,7 +1161,16 @@ def fetch_myjobmag_jobs() -> list[
 
     for category_url in (
         MYJOBMAG_CATEGORY_URLS
+        + MYJOBMAG_FORM4_URLS
     ):
+
+        # ICT URLs come first, so a job listed in both places is
+        # kept as ICT (seen_urls drops the later duplicate).
+        category_hint = (
+            "FORM4"
+            if category_url in MYJOBMAG_FORM4_URLS
+            else "ICT"
+        )
 
         for page in range(
             1,
@@ -1573,6 +1211,10 @@ def fetch_myjobmag_jobs() -> list[
 
                     seen_urls.add(
                         job["source_url"]
+                    )
+
+                    job["category_hint"] = (
+                        category_hint
                     )
 
                     jobs.append(job)
@@ -3323,403 +2965,6 @@ def fetch_corporatestaffing_jobs() -> list[
 
 
 # ============================================================
-# REMOTEOK COLLECTOR
-# ============================================================
-
-def fetch_remoteok_jobs() -> list[
-    dict[str, Any]
-]:
-    """Fetch from RemoteOK's public JSON API (remoteok.com/api).
-
-    No HTML parsing needed — it's a flat JSON array. The first
-    element is always RemoteOK's API-terms/legal notice, not a
-    job (it has no "id" field), so it's skipped. This is a
-    general remote-jobs firehose, not ICT-specific, so like the
-    generic "internships" categories pulled from other sources,
-    relevance is left entirely to score_job downstream rather
-    than pre-filtered here.
-    """
-
-    logger.info(
-        "Fetching jobs from RemoteOK..."
-    )
-
-    jobs: list[dict[str, Any]] = []
-
-    session = requests.Session()
-
-    session.headers.update({
-
-        "User-Agent":
-            "Mozilla/5.0 (compatible; "
-            "Gunga-Job-Radar/1.0)",
-
-        "Accept":
-            "application/json",
-
-    })
-
-    try:
-
-        response = session.get(
-            REMOTEOK_API,
-            timeout=REQUEST_TIMEOUT,
-        )
-
-        response.raise_for_status()
-
-        raw_jobs = response.json()
-
-    except (
-        requests.RequestException,
-        ValueError,
-    ) as exc:
-
-        logger.warning(
-            "RemoteOK request failed: %s",
-            exc,
-        )
-
-        return jobs
-
-    for entry in raw_jobs:
-
-        if not isinstance(entry, dict):
-            continue
-
-        if "id" not in entry:
-            # The legal-notice entry has no id.
-            continue
-
-        apply_url = entry.get(
-            "apply_url"
-        ) or entry.get("url")
-
-        if not apply_url:
-            continue
-
-        title = clean_text(
-            entry.get("position")
-        ).strip()
-
-        if not title:
-            continue
-
-        description_html = entry.get(
-            "description",
-            "",
-        )
-
-        description_text = normalize_text(
-            BeautifulSoup(
-                description_html,
-                "html.parser",
-            ).get_text(
-                separator=" "
-            )
-        )
-
-        location = clean_text(
-            entry.get("location")
-        ).strip() or "Worldwide Remote"
-
-        tags = entry.get("tags") or []
-
-        tag_text = clean_text(tags)
-
-        posted_date = None
-
-        date_str = entry.get("date")
-
-        if date_str:
-
-            try:
-
-                posted_date = (
-                    datetime.fromisoformat(
-                        date_str.replace(
-                            "Z",
-                            "+00:00",
-                        )
-                    )
-                    .date()
-                    .isoformat()
-                )
-
-            except ValueError:
-
-                posted_date = None
-
-        jobs.append({
-
-            "source":
-                "RemoteOK",
-
-            "source_url":
-                apply_url,
-
-            "title":
-                title,
-
-            "company":
-                clean_text(
-                    entry.get("company")
-                ).strip()
-                or "Unknown",
-
-            "location":
-                location,
-
-            "description":
-                (
-                    description_text
-                    + " "
-                    + normalize_text(tag_text)
-                ),
-
-            "employment_type":
-                "",
-
-            "posted_date":
-                posted_date,
-
-            "deadline_date":
-                None,
-
-        })
-
-    time.sleep(
-        REMOTEOK_REQUEST_DELAY
-    )
-
-    logger.info(
-        "RemoteOK returned %d jobs",
-        len(jobs),
-    )
-
-    return jobs
-
-
-# ============================================================
-# WE WORK REMOTELY COLLECTOR
-# ============================================================
-
-def fetch_weworkremotely_jobs() -> list[
-    dict[str, Any]
-]:
-    """Fetch from We Work Remotely's official public RSS feeds.
-
-    Parsed with BeautifulSoup's html.parser rather than a strict
-    XML parser — RSS is simple enough that this reads item/title/
-    description/link/pubDate tags fine without adding an lxml
-    dependency, matching how the rest of this file avoids extra
-    packages.
-    """
-
-    logger.info(
-        "Fetching jobs from We Work Remotely..."
-    )
-
-    jobs: list[dict[str, Any]] = []
-
-    seen_urls: set[str] = set()
-
-    session = requests.Session()
-
-    session.headers.update({
-
-        "User-Agent":
-            "Mozilla/5.0 (compatible; "
-            "Gunga-Job-Radar/1.0)",
-
-        "Accept":
-            "application/rss+xml, text/xml",
-
-    })
-
-    for feed_url in (
-        WEWORKREMOTELY_RSS_URLS
-    ):
-
-        try:
-
-            response = session.get(
-                feed_url,
-                timeout=REQUEST_TIMEOUT,
-            )
-
-            response.raise_for_status()
-
-            soup = BeautifulSoup(
-                response.text,
-                "html.parser",
-            )
-
-        except requests.RequestException as exc:
-
-            logger.warning(
-                "We Work Remotely request "
-                "failed for '%s': %s",
-                feed_url,
-                exc,
-            )
-
-            continue
-
-        for item in soup.find_all("item"):
-
-            # NOTE: <link> is a void/self-closing element in
-            # HTML5, so html.parser silently empties it and its
-            # text is unrecoverable via get_text(). <guid> is a
-            # plain container tag and, per WWR's own feed, always
-            # duplicates the exact same job permalink — so it's
-            # used here as the reliable stand-in.
-            guid_tag = item.find("guid")
-
-            if not guid_tag:
-                continue
-
-            source_url = clean_text(
-                guid_tag.get_text()
-            ).strip()
-
-            if not source_url:
-                continue
-
-            source_url = source_url.split(
-                "?"
-            )[0]
-
-            if source_url in seen_urls:
-                continue
-
-            seen_urls.add(source_url)
-
-            title_tag = item.find("title")
-
-            raw_title = clean_text(
-                title_tag.get_text()
-                if title_tag
-                else ""
-            ).strip()
-
-            # Titles are formatted "<Company>: <Title>"
-            if ": " in raw_title:
-
-                company, _, title = (
-                    raw_title.partition(
-                        ": "
-                    )
-                )
-
-            else:
-
-                company, title = (
-                    "Unknown",
-                    raw_title,
-                )
-
-            if not title:
-                continue
-
-            region_tag = item.find("region")
-
-            location = clean_text(
-                region_tag.get_text()
-                if region_tag
-                else ""
-            ).strip() or "Worldwide Remote"
-
-            description_tag = item.find(
-                "description"
-            )
-
-            description_html = (
-                description_tag.get_text()
-                if description_tag
-                else ""
-            )
-
-            description_text = normalize_text(
-                BeautifulSoup(
-                    description_html,
-                    "html.parser",
-                ).get_text(
-                    separator=" "
-                )
-            )
-
-            pubdate_tag = item.find("pubdate")
-
-            posted_date = None
-
-            if pubdate_tag:
-
-                pub_text = clean_text(
-                    pubdate_tag.get_text()
-                ).strip()
-
-                try:
-
-                    posted_date = (
-                        datetime.strptime(
-                            pub_text[:25],
-                            "%a, %d %b %Y %H:%M:%S",
-                        )
-                        .date()
-                        .isoformat()
-                    )
-
-                except ValueError:
-
-                    posted_date = None
-
-            jobs.append({
-
-                "source":
-                    "We Work Remotely",
-
-                "source_url":
-                    source_url,
-
-                "title":
-                    title.strip(),
-
-                "company":
-                    company.strip()
-                    or "Unknown",
-
-                "location":
-                    location,
-
-                "description":
-                    description_text,
-
-                "employment_type":
-                    "",
-
-                "posted_date":
-                    posted_date,
-
-                "deadline_date":
-                    None,
-
-            })
-
-        time.sleep(
-            WEWORKREMOTELY_REQUEST_DELAY
-        )
-
-    logger.info(
-        "We Work Remotely returned %d "
-        "unique jobs",
-        len(jobs),
-    )
-
-    return jobs
-
-
-# ============================================================
 # RELIEFWEB COLLECTOR
 # ============================================================
 
@@ -4287,6 +3532,19 @@ def score_job(
         location_evidence,
     ) = classify_location(job)
 
+    # Kenya-only mode: a bare "Africa" mention (e.g. "East Africa"
+    # in a company blurb) on a Kenyan board is not an Africa-wide
+    # remote job. Treat it as location-unclear unless it is
+    # genuinely remote (those are dropped by the scan).
+    if (
+        location_classification == "REMOTE-AFRICA"
+        and not looks_remote(job)
+    ):
+        location_classification = "UNKNOWN"
+        location_evidence = [
+            "No clear Kenya eligibility found"
+        ]
+
     if location_classification in (
         "KENYA",
         "REMOTE-AFRICA",
@@ -4625,9 +3883,19 @@ def save_job(
     matched_skills: list[str],
     matched_locations: list[str],
     eligibility: str,
+    category: str = "ICT",
 ) -> int | None:
 
     payload = {
+
+        "category":
+            category,
+
+        "zone_rank":
+            classify_zone(
+                job.get("location"),
+                job.get("title"),
+            ),
 
         "source":
             job["source"],
@@ -4999,6 +4267,70 @@ def send_gmail_digest(
 
 
 # ============================================================
+# FORM 4 DETAIL LOOKUP
+# ============================================================
+
+def fetch_myjobmag_detail(
+    session: requests.Session,
+    url: str,
+) -> dict[str, Any]:
+    """Fetch one MyJobMag job page and pull out the education tags
+    and the requirements text.
+
+    Never raises: on any failure it returns an empty result, and
+    evaluate_form4() then decides from the listing snippet alone
+    (such jobs are saved as level "likely").
+    """
+
+    empty: dict[str, Any] = {
+        "body": "",
+        "qualifications": [],
+        "experience": "",
+    }
+
+    try:
+
+        response = session.get(
+            url,
+            timeout=REQUEST_TIMEOUT,
+        )
+
+        response.raise_for_status()
+
+        detail = parse_myjobmag_detail(
+            response.text
+        )
+
+    except requests.RequestException as exc:
+
+        logger.warning(
+            "MyJobMag detail fetch failed "
+            "for %s: %s",
+            url,
+            exc,
+        )
+
+        detail = empty
+
+    except Exception as exc:
+
+        logger.warning(
+            "MyJobMag detail parse failed "
+            "for %s: %s",
+            url,
+            exc,
+        )
+
+        detail = empty
+
+    time.sleep(
+        MYJOBMAG_REQUEST_DELAY
+    )
+
+    return detail
+
+
+# ============================================================
 # SCAN
 # ============================================================
 
@@ -5009,8 +4341,6 @@ def run_scan(
     logger.info(
         "========== SCAN START =========="
     )
-
-    himalayas_jobs = fetch_himalayas_jobs()
 
     myjobmag_jobs = fetch_myjobmag_jobs()
 
@@ -5028,49 +4358,36 @@ def run_scan(
         fetch_corporatestaffing_jobs()
     )
 
-    remoteok_jobs = fetch_remoteok_jobs()
-
-    weworkremotely_jobs = (
-        fetch_weworkremotely_jobs()
-    )
-
     reliefweb_jobs = fetch_reliefweb_jobs()
 
     psc_jobs = fetch_psc_jobs()
 
     jobs = (
-        himalayas_jobs
-        + myjobmag_jobs
+        myjobmag_jobs
         + brightermonday_jobs
         + openedcareer_jobs
         + fuzu_jobs
         + careerpointkenya_jobs
         + corporatestaffing_jobs
-        + remoteok_jobs
-        + weworkremotely_jobs
         + reliefweb_jobs
         + psc_jobs
     )
 
     logger.info(
         "Processing %d jobs "
-        "(%d Himalayas, %d MyJobMag, "
+        "(%d MyJobMag, "
         "%d BrighterMonday, "
         "%d OpenedCareer, %d Fuzu, "
         "%d Career Point Kenya, "
         "%d Corporate Staffing, "
-        "%d RemoteOK, %d We Work Remotely, "
         "%d ReliefWeb, %d PSC)...",
         len(jobs),
-        len(himalayas_jobs),
         len(myjobmag_jobs),
         len(brightermonday_jobs),
         len(openedcareer_jobs),
         len(fuzu_jobs),
         len(careerpointkenya_jobs),
         len(corporatestaffing_jobs),
-        len(remoteok_jobs),
-        len(weworkremotely_jobs),
         len(reliefweb_jobs),
         len(psc_jobs),
     )
@@ -5083,6 +4400,23 @@ def run_scan(
     telegram_attempts = 0
     telegram_sent = 0
     telegram_failures = 0
+    skipped_remote = 0
+    form4_new = 0
+    form4_rejected = 0
+
+    # One session for the Form 4 detail-page lookups
+    detail_session = requests.Session()
+
+    detail_session.headers.update({
+
+        "User-Agent":
+            "Mozilla/5.0 (compatible; "
+            "Gunga-Job-Radar/1.0)",
+
+        "Accept":
+            "text/html",
+
+    })
 
     for job in jobs:
 
@@ -5111,6 +4445,84 @@ def run_scan(
                 job
             )
 
+            category = (
+                job.get("category_hint")
+                or "ICT"
+            )
+
+            # ================================================
+            # Kenya-only gate: drop remote / worldwide /
+            # restricted-region postings entirely
+            # ================================================
+
+            if (
+                eligibility in REMOTE_ELIGIBILITIES
+                or looks_remote(job)
+            ):
+
+                skipped_remote += 1
+
+                continue
+
+            # ================================================
+            # Form 4 (KCSE-minimum) jobs: only keep the ones
+            # that really need nothing beyond Form 4
+            # ================================================
+
+            if category == "FORM4":
+
+                # Already evaluated the first time it was seen.
+                if database.job_exists(
+                    source_url
+                ):
+                    continue
+
+                detail = fetch_myjobmag_detail(
+                    detail_session,
+                    source_url,
+                )
+
+                form4 = evaluate_form4(
+                    job,
+                    detail,
+                )
+
+                if not form4.ok:
+
+                    form4_rejected += 1
+
+                    logger.info(
+                        "FORM4 SKIPPED | %s | %s",
+                        job["title"],
+                        form4.reject_reason,
+                    )
+
+                    continue
+
+                if detail.get("body"):
+
+                    job["description"] = (
+                        detail["body"][:10000]
+                    )
+
+                    if not job.get(
+                        "deadline_date"
+                    ):
+
+                        job["deadline_date"] = (
+                            extract_deadline_date(
+                                detail["body"]
+                            )
+                        )
+
+                score = form4_score(form4)
+
+                tier = "consider"
+
+                reasons = list(form4.reasons)
+
+                blockers = []
+
             # ================================================
             # Attempt to insert/update in database
             # ================================================
@@ -5134,6 +4546,8 @@ def run_scan(
                 matched_locations,
 
                 eligibility,
+
+                category,
 
             )
 
@@ -5212,6 +4626,14 @@ def run_scan(
                 tier,
 
             )
+
+            # Form 4 jobs live in their own dashboard tab; they
+            # never trigger Telegram alerts.
+            if category == "FORM4":
+
+                form4_new += 1
+
+                continue
 
             # ================================================
             # Handle strong matches
@@ -5311,6 +4733,16 @@ def run_scan(
         jobs_new,
     )
     logger.info(
+        "Remote jobs dropped: %d",
+        skipped_remote,
+    )
+    logger.info(
+        "Form 4 jobs saved: %d "
+        "(rejected for extra requirements: %d)",
+        form4_new,
+        form4_rejected,
+    )
+    logger.info(
         "Strong matches: %d",
         strong_matches,
     )
@@ -5347,7 +4779,18 @@ def run_digest(
         "========== DIGEST START =========="
     )
 
-    jobs = database.get_undigested_jobs()
+    jobs = [
+        dict(row)
+        for row in database.get_undigested_jobs()
+    ]
+
+    for row in jobs:
+
+        if row.get("category") == "FORM4":
+
+            row["title"] = (
+                "🎓 [Form 4] " + str(row["title"])
+            )
 
     logger.info(
         "%d jobs pending digest",
