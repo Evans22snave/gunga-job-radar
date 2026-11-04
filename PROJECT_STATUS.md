@@ -341,3 +341,11 @@ For issues or questions:
 ---
 
 **Project Status:** ✅ Ready for testing and validation
+
+## Update — Kenya-only + Form 4 category
+
+- Removed Himalayas, RemoteOK and We Work Remotely, plus the Remote tab. Remote / worldwide / region-restricted postings are dropped at scan time (`kenya_jobs.looks_remote`, `REMOTE_ELIGIBILITIES`).
+- New **Form 4** category: MyJobMag `jobs-by-education/kcse` and `/fslc` pages. Each new job's detail page is fetched and kept only if it needs nothing beyond KCSE (no diploma, degree, certificate, licence, registration, or a KCSE grade above `MY_KCSE_GRADE`). Marked `confirmed` or `likely`. No Telegram alerts for these.
+- Dashboard: ICT / Form 4 / Saved tabs; weekly highlight (gold) alongside today/yesterday; saved date + grouping (Today / This week / Earlier this month / by month); location zone chips + "Nearest to Malindi" sort.
+- **Run `database/migration_form4.sql` once in Supabase** (adds `category`, `zone_rank`, backfills zones, deletes unsaved/unapplied remote jobs).
+- Tests: `python -m unittest tests_kenya_jobs -v`
