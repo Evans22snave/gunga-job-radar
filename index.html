@@ -32,6 +32,8 @@
     --new-accent-dim: #2A2F5C;
     --yesterday-accent: #6E7A99;
     --yesterday-accent-dim: #22283A;
+    --week-accent: #E0B65C;
+    --week-accent-dim: #3A3220;
 
     --radius: 10px;
     --radius-sm: 6px;
@@ -293,6 +295,47 @@
     box-shadow: 0 0 0 1px var(--yesterday-accent) inset;
     background: linear-gradient(180deg, var(--yesterday-accent-dim) 0%, var(--panel) 60px);
   }
+
+  .job-card.is-recent-week {
+    box-shadow: 0 0 0 1px var(--week-accent) inset;
+    background: linear-gradient(180deg, var(--week-accent-dim) 0%, var(--panel) 60px);
+  }
+
+  .badge.badge-week {
+    color: var(--week-accent);
+    border-color: var(--week-accent);
+    background: var(--week-accent-dim);
+  }
+
+  .badge.badge-saved-date { color: var(--new-accent); border-color: var(--new-accent); }
+  .badge.badge-zone { color: var(--sweep); border-color: var(--sweep); }
+  .badge.badge-form4 { color: var(--signal-strong); border-color: var(--signal-strong); background: var(--signal-strong-dim); }
+
+  .group-header {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--week-accent);
+    margin: 18px 2px 8px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .group-header:first-child { margin-top: 0; }
+
+  .zone-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+  .zone-chip {
+    font-family: 'Inter', sans-serif;
+    font-size: 12.5px;
+    padding: 6px 11px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--panel-raised);
+    color: var(--text-muted);
+    cursor: pointer;
+  }
+  .zone-chip.active { color: var(--sweep); border-color: var(--sweep); }
 
   .badge.badge-new {
     color: var(--new-accent);
@@ -571,22 +614,31 @@
       </div>
     </div>
 
-    <div class="freq-tabs" id="freqTabs" role="tablist" aria-label="Job frequency band">
-      <button class="freq-tab active" data-tab="kenya" role="tab" aria-selected="true">
-        🇰🇪 Kenya
-        <span class="freq-tab-count" id="tabCountKenya">—</span>
+    <div class="freq-tabs" id="freqTabs" role="tablist" aria-label="Job category">
+      <button class="freq-tab active" data-tab="ict" role="tab" aria-selected="true">
+        💻 ICT
+        <span class="freq-tab-count" id="tabCountIct">—</span>
       </button>
-      <button class="freq-tab" data-tab="remote" role="tab" aria-selected="false">
-        🌍 Remote
-        <span class="freq-tab-count" id="tabCountRemote">—</span>
+      <button class="freq-tab" data-tab="form4" role="tab" aria-selected="false">
+        🎓 Form 4
+        <span class="freq-tab-count" id="tabCountForm4">—</span>
       </button>
-      <button class="freq-tab" data-tab="other" role="tab" aria-selected="false">
-        ❓ Other
-        <span class="freq-tab-count" id="tabCountOther">—</span>
+      <button class="freq-tab" data-tab="saved" role="tab" aria-selected="false">
+        ⭐ Saved
+        <span class="freq-tab-count" id="tabCountSaved">—</span>
       </button>
     </div>
 
     <div class="console">
+      <div class="zone-chips" id="zoneChips">
+        <button class="zone-chip active" data-zone="all">🇰🇪 All Kenya</button>
+        <button class="zone-chip" data-zone="0">📍 Malindi &amp; Kilifi</button>
+        <button class="zone-chip" data-zone="0,1">🌴 Whole Coast</button>
+        <button class="zone-chip" data-zone="2">🏙 Nairobi</button>
+        <button class="zone-chip" data-zone="3">Eldoret</button>
+        <button class="zone-chip" data-zone="4">Narok &amp; Mara</button>
+        <button class="zone-chip" data-zone="9">Elsewhere</button>
+      </div>
       <div class="console-row">
         <input type="text" id="search" placeholder="Search title or company…">
         <input type="text" id="locationFilter" placeholder="Location contains… (Kilifi, Mombasa, Nairobi)">
@@ -600,15 +652,12 @@
         </select>
         <select id="sourceFilter">
           <option value="all">All sources</option>
-          <option value="Himalayas">Himalayas</option>
           <option value="MyJobMag">MyJobMag</option>
           <option value="BrighterMonday">BrighterMonday</option>
           <option value="OpenedCareer">OpenedCareer</option>
           <option value="Fuzu">Fuzu</option>
           <option value="Career Point Kenya">Career Point Kenya</option>
           <option value="Corporate Staffing">Corporate Staffing</option>
-          <option value="RemoteOK">RemoteOK</option>
-          <option value="We Work Remotely">We Work Remotely</option>
           <option value="ReliefWeb">ReliefWeb</option>
           <option value="PSC">PSC</option>
         </select>
@@ -617,15 +666,16 @@
           <option value="false">Not applied</option>
           <option value="true">Applied</option>
         </select>
-        <select id="savedFilter">
-          <option value="all">Saved: all</option>
-          <option value="true">⭐ Saved only</option>
-          <option value="false">Not saved</option>
+        <select id="postedFilter">
+          <option value="all">Any date</option>
+          <option value="week">📅 Posted this week</option>
         </select>
         <select id="sortFilter">
           <option value="score_desc">Highest match</option>
           <option value="posted_desc">Newest posted</option>
           <option value="created_desc">Recently added</option>
+          <option value="nearest">Nearest to Malindi</option>
+          <option value="saved_desc">Recently saved</option>
         </select>
       </div>
     </div>
@@ -634,7 +684,7 @@
 
     <div class="job-list" id="jobList"></div>
 
-    <div id="emptyState">No contacts on this frequency — try widening the filters.</div>
+    <div id="emptyState">Nothing here yet — try widening the filters.</div>
     <div id="errorState"></div>
 
     <div class="load-more-wrap">
@@ -665,33 +715,37 @@ const ELIGIBILITY_LABELS = {
   "UNKNOWN": { text: "❓ LOCATION UNCLEAR", class: "elig-unknown" },
 };
 
-// The three tabs' underlying eligibility values. "Kenya" is its
-// own clean bucket; "Remote" groups the two eligibility values
-// that are genuinely open to Evans as remote work; "Other" holds
-// the ones that need a closer look — geographically restricted
-// postings, and ones where eligibility couldn't be determined at
-// all — rather than mixing either of those into "Remote" and
-// making it look more promising than it is.
-const TAB_ELIGIBILITY = {
-  kenya: ["KENYA"],
-  remote: ["REMOTE-AFRICA", "REMOTE-WORLDWIDE"],
-  other: ["REMOTE-RESTRICTED", "UNKNOWN"],
+// Kenya-only: remote / worldwide / restricted postings are never
+// shown. Old rows with no eligibility value are still shown.
+const VISIBLE_ELIGIBILITY_OR = "eligibility.is.null,eligibility.in.(KENYA,UNKNOWN)";
+
+const ZONE_LABELS = {
+  0: "📍 Malindi & Kilifi",
+  1: "🌴 Coast",
+  2: "🏙 Nairobi area",
+  3: "Eldoret",
+  4: "Narok & Mara",
+  9: "Elsewhere in Kenya",
 };
+
+const TAB_DEFAULT_SORT = { ict: "score_desc", form4: "nearest", saved: "saved_desc" };
 
 const state = {
   page: 0,
-  activeTab: "kenya",
+  activeTab: "ict",
   filters: {
     search: "",
     location: "",
+    zone: "all",
     tier: "all",
     source: "all",
     applied: "all",
-    saved: "all",
+    posted: "all",
     sort: "score_desc",
   },
   reachedEnd: false,
   loading: false,
+  lastGroup: null,
 };
 
 let supabase = null;
@@ -734,6 +788,48 @@ function getRecency(job) {
   if (diffDays === 0) return "today";
   if (diffDays === 1) return "yesterday";
   return null;
+}
+
+// Calendar-day difference between a date and today (local time).
+function daysAgo(value) {
+  if (!value) return null;
+  const d = value.length === 10 ? new Date(value + "T00:00:00") : new Date(value);
+  const now = new Date();
+  const day = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  return Math.round((today.getTime() - day.getTime()) / 86400000);
+}
+
+// True when the job was posted within the last 7 days. Uses the
+// source's posted_date, falling back to when we found it.
+function isPostedThisWeek(job) {
+  const n = daysAgo(job.posted_date || job.created_at);
+  return n !== null && n >= 0 && n <= 6;
+}
+
+function weekStartIso() {
+  const d = new Date();
+  d.setDate(d.getDate() - 6);
+  const pad = n => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function formatSavedDate(iso) {
+  return new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+}
+
+// Group label for the Saved tab, based on when the job was saved.
+function savedGroupLabel(iso) {
+  const n = daysAgo(iso);
+  if (n === null) return "Saved earlier";
+  if (n <= 0) return "Saved today";
+  if (n <= 6) return "Saved this week";
+  const d = new Date(iso);
+  const now = new Date();
+  if (d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth()) {
+    return "Saved earlier this month";
+  }
+  return "Saved " + d.toLocaleDateString("en-GB", { month: "long", year: "numeric" });
 }
 
 // Builds the "Posted | Deadline" info box for a job card. Returns
@@ -790,55 +886,76 @@ function buildDateBox(job) {
   return `<div class="date-box">${postedCol}${deadlineCol}</div>`;
 }
 
-function buildBaseQuery(countOnly = false) {
+function cleanTerm(t) {
+  return t.trim().replace(/[%_,()]/g, "");
+}
+
+// Every "one of these" condition is collected as an OR group and
+// combined into a single and(or(...),or(...)) expression, so groups
+// can never overwrite each other.
+function applyOrGroups(query, groups) {
+  if (groups.length === 0) return query;
+  if (groups.length === 1) return query.or(groups[0]);
+  return query.or(`and(${groups.map(g => `or(${g})`).join(",")})`);
+}
+
+const CARD_COLUMNS =
+  "id, source, source_url, title, company, location, score, tier, eligibility, employment_type, posted_date, deadline_date, reasons, applied, applied_at, saved, saved_at, created_at, category, zone_rank";
+
+function buildBaseQuery(opts = {}) {
+  const { countOnly = false, tab = state.activeTab, useFilters = true } = opts;
+
   let query = supabase
     .from("jobs")
-    .select(
-      countOnly
-        ? "id"
-        : "id, source, source_url, title, company, location, score, tier, eligibility, employment_type, posted_date, deadline_date, reasons, applied, applied_at, saved, saved_at, created_at",
-      countOnly ? { count: "exact", head: true } : { count: "exact" }
-    );
+    .select(countOnly ? "id" : CARD_COLUMNS,
+      countOnly ? { count: "exact", head: true } : { count: "exact" });
+
+  const groups = [VISIBLE_ELIGIBILITY_OR];
+
+  if (tab === "saved") {
+    query = query.eq("saved", true);
+  } else {
+    query = query.eq("category", tab === "form4" ? "FORM4" : "ICT");
+  }
+
+  if (!useFilters) return applyOrGroups(query, groups);
 
   const f = state.filters;
 
   if (f.search.trim()) {
-    const term = f.search.trim().replace(/[%_]/g, "");
-    query = query.or(`title.ilike.%${term}%,company.ilike.%${term}%`);
+    const term = cleanTerm(f.search);
+    if (term) groups.push(`title.ilike.%${term}%,company.ilike.%${term}%`);
   }
 
   if (f.location.trim()) {
-    const term = f.location.trim().replace(/[%_]/g, "");
-    query = query.ilike("location", `%${term}%`);
+    const term = cleanTerm(f.location);
+    if (term) query = query.ilike("location", `%${term}%`);
   }
 
-  query = query.in("eligibility", TAB_ELIGIBILITY[state.activeTab]);
-
-  if (f.tier !== "all") {
-    query = query.eq("tier", f.tier);
+  if (f.zone !== "all") {
+    query = query.in("zone_rank", f.zone.split(",").map(Number));
   }
 
-  if (f.source !== "all") {
-    query = query.eq("source", f.source);
+  if (f.posted === "week") {
+    const since = weekStartIso();
+    groups.push(`posted_date.gte.${since},and(posted_date.is.null,created_at.gte.${since}T00:00:00)`);
   }
 
-  if (f.applied !== "all") {
-    query = query.eq("applied", f.applied === "true");
-  }
+  if (f.tier !== "all") query = query.eq("tier", f.tier);
+  if (f.source !== "all") query = query.eq("source", f.source);
+  if (f.applied !== "all") query = query.eq("applied", f.applied === "true");
 
-  if (f.saved !== "all") {
-    query = query.eq("saved", f.saved === "true");
-  }
-
-  return query;
+  return applyOrGroups(query, groups);
 }
 
 async function refreshStats() {
+  const visible = () => supabase.from("jobs").select("id", { count: "exact", head: true }).or(VISIBLE_ELIGIBILITY_OR);
+
   const [{ count: total }, { count: strong }, { count: applied }, { count: saved }] = await Promise.all([
-    supabase.from("jobs").select("id", { count: "exact", head: true }),
-    supabase.from("jobs").select("id", { count: "exact", head: true }).eq("tier", "strong"),
-    supabase.from("jobs").select("id", { count: "exact", head: true }).eq("applied", true),
-    supabase.from("jobs").select("id", { count: "exact", head: true }).eq("saved", true),
+    visible(),
+    visible().eq("tier", "strong").eq("category", "ICT"),
+    visible().eq("applied", true),
+    visible().eq("saved", true),
   ]);
 
   document.getElementById("statTotal").textContent = total ?? "—";
@@ -847,22 +964,16 @@ async function refreshStats() {
   document.getElementById("statSaved").textContent = saved ?? "—";
 }
 
-// Tab pill counts are deliberately global (all jobs in that
-// eligibility bucket), not scoped to the search/tier/source
-// filters currently applied — same convention as the "Tracked"
-// stat above, which also ignores active filters. That keeps the
-// tabs answering "how many Kenya jobs exist at all" rather than
-// a number that shifts confusingly every time a filter changes.
+// Tab counts are global for that category (not narrowed by the
+// search/zone filters), same convention as the stats above.
 async function refreshTabCounts() {
   const results = await Promise.all(
-    Object.entries(TAB_ELIGIBILITY).map(([tab, values]) =>
-      supabase.from("jobs").select("id", { count: "exact", head: true }).in("eligibility", values)
-    )
+    ["ict", "form4", "saved"].map(tab => buildBaseQuery({ countOnly: true, tab, useFilters: false }))
   );
 
-  document.getElementById("tabCountKenya").textContent = results[0].count ?? "—";
-  document.getElementById("tabCountRemote").textContent = results[1].count ?? "—";
-  document.getElementById("tabCountOther").textContent = results[2].count ?? "—";
+  document.getElementById("tabCountIct").textContent = results[0].count ?? "—";
+  document.getElementById("tabCountForm4").textContent = results[1].count ?? "—";
+  document.getElementById("tabCountSaved").textContent = results[2].count ?? "—";
 }
 
 function wireFreqTabs() {
@@ -879,6 +990,8 @@ function wireFreqTabs() {
       button.setAttribute("aria-selected", "true");
 
       state.activeTab = button.dataset.tab;
+      state.filters.sort = TAB_DEFAULT_SORT[state.activeTab];
+      document.getElementById("sortFilter").value = state.filters.sort;
       loadJobs(true);
     });
   });
@@ -887,11 +1000,13 @@ function wireFreqTabs() {
 function renderCard(job) {
   const el = document.createElement("div");
   el.className = `job-card tier-${job.tier}`;
-  if (job.eligibility === "REMOTE-RESTRICTED") el.classList.add("elig-restricted");
   if (job.applied) el.classList.add("is-applied");
   const recency = getRecency(job);
+  const thisWeek = isPostedThisWeek(job);
+  const isForm4 = job.category === "FORM4";
   if (recency === "today") el.classList.add("is-recent-today");
-  if (recency === "yesterday") el.classList.add("is-recent-yesterday");
+  else if (recency === "yesterday") el.classList.add("is-recent-yesterday");
+  else if (thisWeek) el.classList.add("is-recent-week");
   el.dataset.jobId = job.id;
 
   const elig = ELIGIBILITY_LABELS[job.eligibility] || ELIGIBILITY_LABELS["UNKNOWN"];
@@ -914,11 +1029,15 @@ function renderCard(job) {
         <p class="job-title">${escapeHtml(job.title)}</p>
         <div class="job-company">${escapeHtml(job.company)} · ${escapeHtml(job.location || "—")}</div>
       </div>
-      <div class="job-score">${job.score}%<div style="font-size:9px;text-transform:uppercase;letter-spacing:0.4px;color:var(--text-muted);text-align:right;">match</div></div>
+      ${isForm4 ? "" : `<div class="job-score">${job.score}%<div style="font-size:9px;text-transform:uppercase;letter-spacing:0.4px;color:var(--text-muted);text-align:right;">match</div></div>`}
     </div>
     <div class="badge-row">
       ${recency === "today" ? `<span class="badge badge-new">🆕 NEW</span>` : ""}
       ${recency === "yesterday" ? `<span class="badge badge-new-yesterday">🕓 Yesterday</span>` : ""}
+      ${thisWeek ? `<span class="badge badge-week">📅 Posted this week</span>` : ""}
+      ${isForm4 ? `<span class="badge badge-form4">🎓 Form 4</span>` : ""}
+      ${job.saved && job.saved_at ? `<span class="badge badge-saved-date">★ Saved ${formatSavedDate(job.saved_at)}</span>` : ""}
+      <span class="badge badge-zone">${ZONE_LABELS[job.zone_rank] || ZONE_LABELS[9]}</span>
       <span class="badge ${elig.class}">${elig.text}</span>
       <span class="badge">${escapeHtml(job.source)}</span>
       ${job.employment_type ? `<span class="badge">${escapeHtml(job.employment_type)}</span>` : ""}
@@ -1007,14 +1126,25 @@ async function toggleSaved(job, cardEl, buttonEl) {
   buttonEl.textContent = nextSaved ? "★ Saved" : "☆ Save";
   buttonEl.classList.toggle("done", nextSaved);
 
-  // If the "Saved only" filter is active, an unsaved card no
-  // longer belongs in the list — drop it instead of leaving a
-  // stale card the user just removed from their saved list.
-  if (nextSaved === false && state.filters.saved === "true") {
+  // Show / clear the "Saved <date>" badge straight away.
+  const oldBadge = cardEl.querySelector(".badge-saved-date");
+  if (oldBadge) oldBadge.remove();
+
+  if (nextSaved) {
+    job.saved_at = new Date().toISOString();
+    const badge = document.createElement("span");
+    badge.className = "badge badge-saved-date";
+    badge.textContent = `★ Saved ${formatSavedDate(job.saved_at)}`;
+    cardEl.querySelector(".badge-row").prepend(badge);
+  }
+
+  // On the Saved tab an unsaved card no longer belongs.
+  if (nextSaved === false && state.activeTab === "saved") {
     cardEl.remove();
   }
 
   refreshStats();
+  refreshTabCounts();
 }
 
 async function loadJobs(reset) {
@@ -1024,6 +1154,7 @@ async function loadJobs(reset) {
   if (reset) {
     state.page = 0;
     state.reachedEnd = false;
+    state.lastGroup = null;
     document.getElementById("jobList").innerHTML = "";
   }
 
@@ -1032,19 +1163,28 @@ async function loadJobs(reset) {
   document.getElementById("loadMoreBtn").textContent = "Loading…";
   document.getElementById("loadMoreBtn").disabled = true;
 
-  const sortMap = {
-    score_desc: ["score", { ascending: false }],
-    posted_desc: ["posted_date", { ascending: false, nullsFirst: false }],
-    created_desc: ["created_at", { ascending: false }],
-  };
-  const [sortCol, sortOpts] = sortMap[state.filters.sort];
+  const sortKey = state.activeTab === "saved" && state.filters.sort === "score_desc"
+    ? "saved_desc"
+    : state.filters.sort;
+
+  let ordered = buildBaseQuery();
+
+  if (sortKey === "score_desc") {
+    ordered = ordered.order("score", { ascending: false });
+  } else if (sortKey === "posted_desc") {
+    ordered = ordered.order("posted_date", { ascending: false, nullsFirst: false }).order("created_at", { ascending: false });
+  } else if (sortKey === "created_desc") {
+    ordered = ordered.order("created_at", { ascending: false });
+  } else if (sortKey === "nearest") {
+    ordered = ordered.order("zone_rank", { ascending: true }).order("posted_date", { ascending: false, nullsFirst: false }).order("score", { ascending: false });
+  } else if (sortKey === "saved_desc") {
+    ordered = ordered.order("saved_at", { ascending: false, nullsFirst: false });
+  }
 
   const from = state.page * PAGE_SIZE;
   const to = from + PAGE_SIZE - 1;
 
-  const { data, error, count } = await buildBaseQuery()
-    .order(sortCol, sortOpts)
-    .range(from, to);
+  const { data, error, count } = await ordered.range(from, to);
 
   state.loading = false;
 
@@ -1057,12 +1197,25 @@ async function loadJobs(reset) {
   }
 
   const list = document.getElementById("jobList");
-  data.forEach(job => list.appendChild(renderCard(job)));
+  data.forEach(job => {
+    // Saved tab: group by when the job was saved
+    if (state.activeTab === "saved" && sortKey === "saved_desc") {
+      const label = savedGroupLabel(job.saved_at);
+      if (label !== state.lastGroup) {
+        const h = document.createElement("div");
+        h.className = "group-header";
+        h.textContent = label;
+        list.appendChild(h);
+        state.lastGroup = label;
+      }
+    }
+    list.appendChild(renderCard(job));
+  });
 
   document.getElementById("status-line").textContent =
-    `Showing ${list.children.length} of ${count ?? "?"} contacts`;
+    `Showing ${list.querySelectorAll(".job-card").length} of ${count ?? "?"} jobs`;
 
-  if (list.children.length === 0) {
+  if (list.querySelectorAll(".job-card").length === 0) {
     document.getElementById("emptyState").style.display = "block";
   }
 
@@ -1094,7 +1247,16 @@ function wireControls() {
     loadJobs(true);
   }, 350));
 
-  ["tierFilter", "sourceFilter", "appliedFilter", "savedFilter", "sortFilter"].forEach(id => {
+  document.querySelectorAll(".zone-chip").forEach(chip => {
+    chip.addEventListener("click", () => {
+      document.querySelectorAll(".zone-chip").forEach(c => c.classList.remove("active"));
+      chip.classList.add("active");
+      state.filters.zone = chip.dataset.zone;
+      loadJobs(true);
+    });
+  });
+
+  ["tierFilter", "sourceFilter", "appliedFilter", "postedFilter", "sortFilter"].forEach(id => {
     document.getElementById(id).addEventListener("change", e => {
       const key = id.replace("Filter", "");
       state.filters[key] = e.target.value;
