@@ -128,7 +128,9 @@ class Database:
                         eligibility,
                         employment_type,
                         posted_date,
-                        deadline_date
+                        deadline_date,
+                        category,
+                        zone_rank
                     )
                     VALUES (
                         %(source)s,
@@ -144,7 +146,9 @@ class Database:
                         %(eligibility)s,
                         %(employment_type)s,
                         %(posted_date)s,
-                        %(deadline_date)s
+                        %(deadline_date)s,
+                        %(category)s,
+                        %(zone_rank)s
                     )
                     ON CONFLICT (source_url) DO UPDATE SET
                         eligibility = COALESCE(
@@ -266,7 +270,8 @@ class Database:
                         location,
                         source_url,
                         score,
-                        tier
+                        tier,
+                        category
                     FROM jobs
                     WHERE digested = FALSE
                     ORDER BY
